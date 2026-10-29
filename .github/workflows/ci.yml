@@ -1,0 +1,93 @@
+# Tengai's gate on a pull request: Python lint and tests, sign-off, and the Lean tree built against Tengoku's published cache with every
+# warning an error. `ci` is the one job to require. Nothing here has a secret, and nothing a PR supplies runs with a write token.
+name: ci
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash   # -e -o pipefail: a failing command before a `| tail` fails its step
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: { contents: read }
+    steps:
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2
+        with: { egress-policy: audit }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: Lint (pre-commit: ruff 0.12.2, the pins Tengoku uses)
+        run: pipx install pre-commit==4.2.0 && pre-commit run --all-files --show-diff-on-failure
+      - name: Tests (the whole drip on a fake agent and a fake gate; no network, no money)
+        run: python -m pip install -q pytest==8.4.1 && python -m pytest -q
+
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: read }
+    env:
+      BASE: ${{ github.event.pull_request.base.sha }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Every commit carries Signed-off-by (git commit -s)
+        run: |
+          bad=0
+          for c in $(git rev-list "$BASE..$HEAD"); do
+            git log -1 --format=%B "$c" | grep -q '^Signed-off-by: ' || { echo "::error::$c has no Signed-off-by"; bad=1; }
+          done
+          exit $bad
+
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions: { contents: read }
+    env:
+      TENGOKU_VERIFY: require   # an unattested cache part is refused, never unpacked
+      GH_TOKEN: ${{ github.token }}   # gh attestation verify
+    steps:
+      - name: Free disk (Tengoku's compiled cache is several GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift /usr/lib/jvm /usr/share/miniconda /usr/local/share/powershell /usr/local/lib/node_modules /opt/az /usr/local/graalvm /usr/local/share/chromium
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/0e36a07b9bbcc5381fa6250df109f9a4f94d7bac/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Tengoku at the pin, with its compiled cache
+        run: scripts/tengoku-setup.sh
+      - name: The gate on the whole tree (lint, Lake with warnings as errors, the axiom audit)
+        run: python -m anomalous_archangel gate
+      - name: The root target
+        run: lake build Tengai
+
+  ci:
+    if: always()
+    needs: [python, dco, lean]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every job passed (a skipped dco, on a push, is fine)
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac

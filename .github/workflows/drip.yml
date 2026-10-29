@@ -103,7 +103,7 @@ jobs:
           if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
           id="$(python -c 'import json; print(json.load(open("drips/index.json"))["drips"][0]["id"])')"
           git commit -q -s -m "drip $id" -m "Written by anomalous-archangel. Every Lean file passed the gate; the report is drips/$id/report.md."
-          for attempt in 1 2 3; do
+          for _ in 1 2 3; do
             git pull -q --rebase "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main || true
             git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main && exit 0
           done

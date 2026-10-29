@@ -11,6 +11,12 @@ PINNED = re.compile(r"^\s*-?\s*uses:\s*[\w./-]+@[0-9a-f]{40}\s+#\s*\S+")
 
 
 @pytest.mark.parametrize("path", WF, ids=lambda p: p.name)
+def test_workflow_is_yaml(path):
+    yaml = pytest.importorskip("yaml")
+    assert isinstance(yaml.safe_load(path.read_text()), dict)
+
+
+@pytest.mark.parametrize("path", WF, ids=lambda p: p.name)
 def test_workflow_conventions(path):
     lines = path.read_text().splitlines()
     text = "\n".join(lines)

@@ -53,6 +53,7 @@ FORBIDDEN = [
     (r"set_option\s+maxHeartbeats\s+(\d+)", "maxHeartbeats (checked below)"),
     (r"attribute\s*\[[^\]]*\binstance\b", "a global instance attribute"),
 ]
+OWN_DIAG = re.compile(r"^(error|warning)\b[^\n]*?\bTengai/\S+\.lean:\d+")
 IMPORT_OK = re.compile(r"^(import Tengoku\.All|import Tengai(\.[A-Za-z0-9_]+)+)\s*$")
 
 
@@ -312,7 +313,8 @@ class LakeGate:
         for m in modules:
             r = self.run(["lake", "build", m], capture_output=True, text=True, timeout=3600, cwd=self.root, env=self.env, check=False)
             out = r.stdout + r.stderr
-            bad = [ln for ln in out.splitlines() if re.match(r"^(error|warning)\b", ln.strip()) or "sorry" in ln]
+            # Lake replays the saved warnings of Tengoku's own up-to-date modules on every build: only a diagnostic about a file of Tengai counts
+            bad = [ln for ln in out.splitlines() if OWN_DIAG.match(ln.strip())]
             if r.returncode != 0 or bad:
                 return GateResult(self.name, "failed", f"{m}: lake build failed", (bad or out.splitlines()[-8:])[:20])
         errs += self.axioms(tm, modules)

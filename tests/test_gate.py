@@ -109,11 +109,15 @@ def test_lake_gate_reads_the_build_output(tmp_path):
         if cmd[:2] == ["lake", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, "Lake", "")
         if cmd[:2] == ["lake", "build"]:
-            return subprocess.CompletedProcess(cmd, 0, "warning: Tengai/A.lean:3: unused variable", "")
+            return subprocess.CompletedProcess(cmd, 0, warning, "")
         return subprocess.CompletedProcess(cmd, 0, "'Tengai.a' depends on axioms: [propext]", "")
 
+    warning = "warning: Tengai/A.lean:3:4: unused variable `x`"
     r = gate.LakeGate(tmp_path, runner).check(tm, ["Tengai.A"])
-    assert r.kind == "failed"
+    assert r.kind == "failed" and "Tengai/A.lean" in r.errors[0]
+    # Lake replays the saved warnings of Tengoku's own modules on every build: those are not Tengai's
+    warning = "warning: Tengoku/LeanPool/Foo.lean:365:66: This simp argument is unused:"
+    assert gate.LakeGate(tmp_path, runner).check(tm, ["Tengai.A"]).kind == "ok"
 
 
 def test_run_gates_stops_at_the_first_failure_and_needs_one():

@@ -1,0 +1,17 @@
+name = "tengai"
+defaultTargets = ["Tengai"]
+
+# The gate is the compiler: any warning (an unused variable, a `sorry`, a deprecation) is an error here.
+[leanOptions]
+pp.unicode.fun = true
+maxSynthPendingDepth = 3
+warningAsError = true
+
+# Tengoku, at the commit in tengoku.pin, with its compiled cache: scripts/tengoku-setup.sh puts it in .tengoku.
+[[require]]
+name = "tengoku"
+path = ".tengoku"
+
+[[lean_lib]]
+name = "Tengai"
+globs = ["Tengai", "Tengai.+"]

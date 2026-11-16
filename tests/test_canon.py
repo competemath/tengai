@@ -58,6 +58,8 @@ class Canon(unittest.TestCase):
                 ("nat-succ", "Fixtures.bad_succ"),
                 ("name-theorem", "Fixtures.BadName"),
                 ("name-type", "Fixtures.bad_type"),
+                ("global-simp", "Fixtures.bad_global_simp"),
+                ("global-instance", "Fixtures.bad_global_instance"),
             },
         )
 

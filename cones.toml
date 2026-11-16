@@ -1,0 +1,7 @@
+# The cones of Tengai (docs/design.md, "tengai layout"; ADR-0004). A topic is a directory Tengai/<Topic>/; a module of a topic may import Lean core, modules of its own
+# topic, and modules of the topics named in its `parents`, and nothing else. `max_modules` is the cone-size budget: a topic that outgrows it is split, in a pull request that
+# says so. tools/check_layout.py enforces all of this (CI, job `layout`). No topic exists until the first promotion; add a table per topic:
+#
+#   [topic.Logic]
+#   parents = []
+#   max_modules = 40

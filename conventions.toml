@@ -34,3 +34,15 @@ id = "name-type"
 summary = "An inductive type's name ends in an UpperCamelCase component."
 rationale = "A type is a noun; the case tells a reader, and a name-based index, what kind of thing it is."
 tiebreak = "intuitive"
+
+[[rule]]
+id = "global-simp"
+summary = "No theorem is a global `simp` lemma: `scoped` or `local` inside its topic."
+rationale = "Invariant I4, searchable but not active. A global simp lemma changes what `simp` does for every file that imports the library, so a rewrite that one topic needs becomes a hidden search step for all the others. A scoped lemma is found by the indexes and used where its namespace is open."
+tiebreak = "least-hidden-search"
+
+[[rule]]
+id = "global-instance"
+summary = "No declaration is a global instance: `scoped` or `local` inside its topic."
+rationale = "Invariant I4. A global instance enlarges the typeclass search of every proof that imports the library; the cost is paid by files that never wanted it, and it is invisible in the proof text."
+tiebreak = "least-hidden-search"

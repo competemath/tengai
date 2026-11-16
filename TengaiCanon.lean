@@ -23,8 +23,18 @@ def rules : Array Rule := #[
   { id := "not-eq", message := "a statement uses `¬ a = b`: write `a ≠ b`" },
   { id := "nat-succ", message := "a statement uses `Nat.succ n`: write `n + 1`" },
   { id := "name-theorem", message := "the last component of a theorem's name is not snake_case (lowercase letters, digits, `_`, `'`)" },
-  { id := "name-type", message := "the last component of an inductive type's name is not UpperCamelCase" }
+  { id := "name-type", message := "the last component of an inductive type's name is not UpperCamelCase" },
+  { id := "global-simp", message := "a theorem is a global `simp` lemma: make it `scoped` or `local` inside its topic (invariant I4: searchable, not active)" },
+  { id := "global-instance", message := "a declaration is a global instance: make it `scoped` or `local` inside its topic (invariant I4: searchable, not active)" }
 ]
+
+/-- the declaration is registered in the GLOBAL simp set (a `scoped` or `local` simp attribute is not in this state until its namespace is opened) -/
+def isGlobalSimp (env : Environment) (n : Name) : Bool :=
+  (Lean.Meta.simpExtension.getState env).isLemma (.decl n)
+
+/-- the declaration is a GLOBAL instance (a `scoped` or `local` instance is not in the imported instance table until its namespace is opened) -/
+def isGlobalInstance (env : Environment) (n : Name) : Bool :=
+  Lean.Meta.isInstanceCore env n
 
 def hasGtGe (e : Expr) : Bool :=
   (e.find? fun s => s.isAppOf ``GT.gt || s.isAppOf ``GE.ge).isSome
@@ -57,7 +67,7 @@ def isUpperCamel (s : String) : Bool :=
   | c :: _ => c.isUpper && s.all fun d => d.isAlphanum
 
 /-- the rule ids a declaration breaks -/
-def violations (n : Name) (ci : ConstantInfo) : Array String := Id.run do
+def violations (env : Environment) (n : Name) (ci : ConstantInfo) : Array String := Id.run do
   let mut out : Array String := #[]
   match ci with
   | .thmInfo _ =>
@@ -65,9 +75,11 @@ def violations (n : Name) (ci : ConstantInfo) : Array String := Id.run do
     if hasNotEq ci.type then out := out.push "not-eq"
     if hasNatSucc ci.type then out := out.push "nat-succ"
     if !generatedLemma (lastComponent n) && !isSnake (lastComponent n) then out := out.push "name-theorem"
+    if !generatedLemma (lastComponent n) && isGlobalSimp env n then out := out.push "global-simp"  -- the lemmas Lean generates (`sizeOf_spec`, `injEq`) are global simp lemmas by construction: not the author's
   | .inductInfo _ =>
     if !isUpperCamel (lastComponent n) then out := out.push "name-type"
   | _ => pure ()
+  if isGlobalInstance env n then out := out.push "global-instance"
   return out
 
 /-- the declarations to look at: those defined in a module under one of `mods`, whose name is the author's (no generated auxiliary name) -/
@@ -85,7 +97,7 @@ def selected (env : Environment) (mods : List Name) : Array (String × Name × C
 def report (env : Environment) (mods : List Name) : Array String := Id.run do
   let mut out : Array String := #[]
   for (m, n, ci) in selected env mods do
-    for r in violations n ci do
+    for r in violations env n ci do
       out := out.push s!"violation\t{r}\t{n}\t{m}"
   return out
 

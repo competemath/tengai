@@ -8,3 +8,13 @@ warningAsError = true
 
 [[lean_lib]]
 name = "Tengai"
+
+# The checker of the canonical form (conventions.toml, ADR-0004 invariant I2). It imports only Lean.
+[[lean_exe]]
+name = "tengai-canon"
+root = "TengaiCanon"
+supportInterpreter = true
+
+# Fixtures of the checker: not a default target, built by tests/test_canon.py.
+[[lean_lib]]
+name = "TengaiFixtures"

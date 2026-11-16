@@ -47,6 +47,10 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Build (every warning is an error)
         run: lake build 2>&1 | tail -20
+      - name: The canonical-form checker, on its fixtures and on the library (conventions.toml and TengaiCanon.lean list the same rules)
+        run: |
+          lake build tengai-canon TengaiFixtures 2>&1 | tail -20
+          python3 tests/test_canon.py
       - name: The toolchain is the one the file names
         run: test "$(lake env lean --version | grep -o '4\.[0-9.]*\(-rc[0-9]*\)\?' | head -1)" = "$(sed 's/.*v//' lean-toolchain)"
 

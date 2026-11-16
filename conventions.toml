@@ -1,0 +1,36 @@
+# The canonical form of Tengai: ONE representation for everything (ADR-0004, invariant I2). A convention is an entry here with its rationale and its tie-breaker;
+# `TengaiCanon.lean` checks it and `tests/test_canon.py` holds the two lists equal. Changing or adding a convention is a versioned event that generates a lens
+# (ADR-0003): it is never swept silently.
+#
+# tiebreak: "intuitive" (the reader would guess it), "scales" (it stays correct as the library grows), or "least-hidden-search" (two equally intuitive forms:
+# the one that leaves the prover less to search for behind the scenes).
+
+[[rule]]
+id = "gt-ge"
+summary = "Order relations are written `<` and `≤`, never `>` and `≥`."
+rationale = "`a > b` and `b < a` are one statement. Two spellings double the surface a prover and a retrieval index must know; `>` is reducible to `<`, so the canonical form costs nothing and unification meets one head symbol."
+tiebreak = "least-hidden-search"
+
+[[rule]]
+id = "not-eq"
+summary = "A disequality is `a ≠ b`, never `¬ a = b`."
+rationale = "One head symbol (`Ne`) for one idea; `¬ a = b` is a negation of an equation and is found by a different pattern."
+tiebreak = "intuitive"
+
+[[rule]]
+id = "nat-succ"
+summary = "A successor is `n + 1`, never `Nat.succ n`."
+rationale = "`n + 1` is the form every arithmetic lemma and `simp` set is written in; `Nat.succ n` needs a bridge lemma each time."
+tiebreak = "least-hidden-search"
+
+[[rule]]
+id = "name-theorem"
+summary = "A theorem's name ends in a snake_case component: lowercase letters, digits, `_` and `'`."
+rationale = "The name is part of how a theorem is found and read; one case convention makes a name predictable from its statement."
+tiebreak = "intuitive"
+
+[[rule]]
+id = "name-type"
+summary = "An inductive type's name ends in an UpperCamelCase component."
+rationale = "A type is a noun; the case tells a reader, and a name-based index, what kind of thing it is."
+tiebreak = "intuitive"

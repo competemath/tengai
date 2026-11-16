@@ -1,0 +1,10 @@
+name = "Tengai"
+defaultTargets = ["Tengai"]
+
+# Every warning is an error: a `sorry`, an unused variable and a deprecated name all stop the build. Tengai has no dependency (ADR-0001, invariant I3:
+# it never imports Tengoku, and nothing else is needed yet); what it needs from Lean core it takes from Lean core.
+[leanOptions]
+warningAsError = true
+
+[[lean_lib]]
+name = "Tengai"

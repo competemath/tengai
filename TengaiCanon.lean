@@ -75,7 +75,7 @@ def violations (env : Environment) (n : Name) (ci : ConstantInfo) : Array String
     if hasNotEq ci.type then out := out.push "not-eq"
     if hasNatSucc ci.type then out := out.push "nat-succ"
     if !generatedLemma (lastComponent n) && !isSnake (lastComponent n) then out := out.push "name-theorem"
-    if isGlobalSimp env n then out := out.push "global-simp"
+    if !generatedLemma (lastComponent n) && isGlobalSimp env n then out := out.push "global-simp"  -- the lemmas Lean generates (`sizeOf_spec`, `injEq`) are global simp lemmas by construction: not the author's
   | .inductInfo _ =>
     if !isUpperCamel (lastComponent n) then out := out.push "name-type"
   | _ => pure ()

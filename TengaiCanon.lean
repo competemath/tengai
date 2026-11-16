@@ -42,6 +42,10 @@ def lastComponent (n : Name) : String :=
   | .str _ s => s
   | _ => ""
 
+/-- names Lean itself gives to the lemmas it generates for an inductive type or a structure: the author did not write them, so no rule reads them -/
+def generatedLemma (s : String) : Bool :=
+  s == "sizeOf_spec" || s == "injEq"
+
 def isSnake (s : String) : Bool :=
   match s.toList with
   | [] => false
@@ -60,7 +64,7 @@ def violations (n : Name) (ci : ConstantInfo) : Array String := Id.run do
     if hasGtGe ci.type then out := out.push "gt-ge"
     if hasNotEq ci.type then out := out.push "not-eq"
     if hasNatSucc ci.type then out := out.push "nat-succ"
-    if !isSnake (lastComponent n) then out := out.push "name-theorem"
+    if !generatedLemma (lastComponent n) && !isSnake (lastComponent n) then out := out.push "name-theorem"
   | .inductInfo _ =>
     if !isUpperCamel (lastComponent n) then out := out.push "name-type"
   | _ => pure ()

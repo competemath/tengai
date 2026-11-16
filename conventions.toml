@@ -25,7 +25,7 @@ tiebreak = "least-hidden-search"
 
 [[rule]]
 id = "name-theorem"
-summary = "A theorem's name ends in a snake_case component: lowercase letters, digits, `_` and `'`."
+summary = "A theorem's name ends in a snake_case component: lowercase letters, digits, `_` and `'`. (The lemmas Lean generates for a type, `sizeOf_spec` and `injEq`, are not the author's names and are not read.)"
 rationale = "The name is part of how a theorem is found and read; one case convention makes a name predictable from its statement."
 tiebreak = "intuitive"
 

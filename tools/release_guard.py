@@ -3,7 +3,8 @@
 
   release_guard.py [--root DIR]              the tree holds no version, tag or lock at a major above `max_major` (release-guard.toml)
   release_guard.py --tag TAG [--root DIR]    TAG may exist: a version tag whose major is above `max_major` may not
-  release_guard.py --changed BASE [--root DIR]   exit 3 if the guard itself (its config, this script, its workflow, its test) differs from git ref BASE
+  release_guard.py --changed BASE [--root DIR]   exit 3 if the guard itself differs from git ref BASE: the files `guard_files` of BASE's release-guard.toml name
+                                             (default: the config, this script, its workflow, its test). The workflow runs BASE's copy of this script, never the pull request's.
 
 What it reads, and nothing else: `version = "x.y.z"` in every `lakefile.toml` (and `version := v!"x.y.z"` in a `lakefile.lean`), every git tag that looks like a version (`v1`, `1.0`, `V2.3.4`), and the
 `tag` of `core.lock` if there is one. A version at or below `max_major` is fine; one above it is a violation and the exit status is 1.
@@ -104,10 +105,15 @@ def tag_violation(root: Path, tag: str) -> str | None:
     return f"tag {tag}: major {m} > {cap}" if m is not None and m > cap else None
 
 
+def watched(root: Path, base: str) -> tuple[str, ...]:
+    """the files that make up the guard, as BASE says (a pull request cannot shrink the list it is judged by): `guard_files` of BASE's release-guard.toml, else the default"""
+    r = subprocess.run(["git", "show", f"{base}:release-guard.toml"], cwd=root, capture_output=True, text=True, check=False)
+    files = tomllib.loads(r.stdout).get("guard_files") if r.returncode == 0 else None
+    return tuple(["release-guard.toml", *files]) if isinstance(files, list) and files else GUARD_FILES
+
+
 def guard_changed(root: Path, base: str) -> bool:
-    r = subprocess.run(
-        ["git", "diff", "--quiet", base, "--", *GUARD_FILES], cwd=root, check=False
-    )
+    r = subprocess.run(["git", "diff", "--quiet", base, "--", *watched(root, base)], cwd=root, check=False)
     return r.returncode != 0
 
 

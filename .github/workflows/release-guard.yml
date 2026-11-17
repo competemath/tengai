@@ -42,6 +42,7 @@ jobs:
       AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD: ${{ github.event.pull_request.head.sha }}
       BASE: ${{ github.event.pull_request.base.sha }}
+      SCRIPT: tools/release_guard.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
@@ -49,8 +50,11 @@ jobs:
         run: |
           # the pull request that introduces the guard has nothing to be compared with
           if ! git cat-file -e "$BASE:release-guard.toml" 2>/dev/null; then echo "the base has no guard yet: nothing to protect"; exit 0; fi
+          # the judge is BASE's copy of the guard: a pull request cannot weaken the script it is judged by
+          guard="$RUNNER_TEMP/release_guard_base.py"
+          git show "$BASE:$SCRIPT" > "$guard"
           set +e
-          python3 tools/release_guard.py --changed "$BASE"
+          python3 "$guard" --root . --changed "$BASE"
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then echo "the guard is unchanged"; exit 0; fi

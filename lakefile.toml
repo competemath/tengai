@@ -1,4 +1,5 @@
 name = "Tengai"
+version = "0.0.6"   # experimental: nothing at or above 1.0.0 before the owner's explicit approval (release-guard.toml, docs/release-barrier.md)
 defaultTargets = ["Tengai"]
 
 # Every warning is an error: a `sorry`, an unused variable and a deprecated name all stop the build. Tengai has no dependency (ADR-0001, invariant I3:

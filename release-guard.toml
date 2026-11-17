@@ -1,0 +1,4 @@
+# No v1 of any library of this repository before the owner's explicit approval (a baseline of quality has to be shown first).
+# `tools/release_guard.py` reads this file; raising `max_major` needs an approving review from someone other than the author, and the owner's tag ruleset
+# (tools/release-ruleset.json, docs/release-barrier.md) is what makes a tag above it impossible to push at all. Versions 0.x are experimental and free.
+max_major = 0

@@ -18,3 +18,9 @@ supportInterpreter = true
 # Fixtures of the checker: not a default target, built by tests/test_canon.py.
 [[lean_lib]]
 name = "TengaiFixtures"
+
+# The normaliser of the canonical form: the three syntactic rules of conventions.toml applied to a file (idempotent, tests/test_normalise.py). It imports only Lean.
+[[lean_exe]]
+name = "tengai-normalise"
+root = "TengaiNormalise"
+supportInterpreter = true

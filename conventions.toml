@@ -1,5 +1,6 @@
 # The canonical form of Tengai: ONE representation for everything (ADR-0004, invariant I2). A convention is an entry here with its rationale and its tie-breaker;
-# `TengaiCanon.lean` checks it and `tests/test_canon.py` holds the two lists equal. Changing or adding a convention is a versioned event that generates a lens
+# `TengaiCanon.lean` checks it and `tests/test_canon.py` holds the two lists equal; `TengaiNormalise.lean` produces the first three rules
+# (gt-ge, not-eq, nat-succ) on a source file, idempotently (`tests/test_normalise.py`). Changing or adding a convention is a versioned event that generates a lens
 # (ADR-0003): it is never swept silently.
 #
 # tiebreak: "intuitive" (the reader would guess it), "scales" (it stays correct as the library grows), or "least-hidden-search" (two equally intuitive forms:

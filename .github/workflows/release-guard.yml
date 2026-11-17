@@ -1,0 +1,100 @@
+# The release barrier (docs/release-barrier.md): no v1 of any library before the owner's explicit approval. A tripwire; the lock is the owner's tag ruleset.
+# The guard that judges a tag or a release is read from the DEFAULT BRANCH, never from the tagged commit (a tag could point at a commit with the guard removed).
+name: release-guard
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["**"]
+  release:
+    types: [created, published, prereleased, released]
+  workflow_dispatch:
+permissions: {}
+defaults:
+  run:
+    shell: bash   # -e -o pipefail
+jobs:
+  guard:
+    if: github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, fetch-tags: true, persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: No version, tag or lock above max_major
+        run: |
+          python3 tools/release_guard.py
+          python3 -m unittest tests.test_release_guard
+
+  approval:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: read, pull-requests: read }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+      BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: A change to the guard itself needs an approving review by a collaborator who is not the author
+        run: |
+          # the pull request that introduces the guard has nothing to be compared with
+          if ! git cat-file -e "$BASE:release-guard.toml" 2>/dev/null; then echo "the base has no guard yet: nothing to protect"; exit 0; fi
+          set +e
+          python3 tools/release_guard.py --changed "$BASE"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then echo "the guard is unchanged"; exit 0; fi
+          [ "$rc" -eq 3 ] || exit "$rc"
+          for u in $(gh api "repos/$REPO/pulls/$PR/reviews" --paginate --jq '.[] | select(.state == "APPROVED" and .commit_id == env.HEAD) | .user.login' | sort -u); do
+            [ "$u" = "$AUTHOR" ] && continue
+            perm="$(gh api "repos/$REPO/collaborators/$u/permission" --jq .permission)"
+            case "$perm" in admin|maintain|write) echo "approved by $u ($perm)"; exit 0 ;; esac
+          done
+          echo "::error::the release guard changed and no collaborator other than the author has approved this head"
+          exit 1
+
+  tag:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: write }
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: main, fetch-depth: 1, persist-credentials: true }
+      - name: A version tag above max_major is deleted
+        run: |
+          if python3 tools/release_guard.py --tag "$TAG"; then echo "tag $TAG is allowed"; exit 0; fi
+          git push origin ":refs/tags/$TAG"
+          echo "::error::tag $TAG was deleted: no v1 before the owner's explicit approval"
+          exit 1
+
+  release:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: main, fetch-depth: 1, persist-credentials: false }
+      - name: A release of a version above max_major is deleted with its tag
+        run: |
+          if python3 tools/release_guard.py --tag "$TAG"; then echo "release $TAG is allowed"; exit 0; fi
+          gh release delete "$TAG" --repo "$REPO" --cleanup-tag --yes
+          echo "::error::release $TAG was deleted: no v1 before the owner's explicit approval"
+          exit 1

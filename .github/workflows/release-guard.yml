@@ -4,6 +4,8 @@ name: release-guard
 on:
   pull_request:
     branches: [main]
+  pull_request_review:
+    types: [submitted, dismissed]
   push:
     branches: [main]
     tags: ["**"]
@@ -31,7 +33,7 @@ jobs:
           python3 -m unittest tests.test_release_guard
 
   approval:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: { contents: read, pull-requests: read }

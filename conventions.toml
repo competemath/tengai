@@ -47,3 +47,15 @@ id = "global-instance"
 summary = "No declaration is a global instance: `scoped` or `local` inside its topic."
 rationale = "Invariant I4. A global instance enlarges the typeclass search of every proof that imports the library; the cost is paid by files that never wanted it, and it is invisible in the proof text."
 tiebreak = "least-hidden-search"
+
+[[rule]]
+id = "def-irreducible"
+summary = "Every definition is `@[irreducible]` and comes with API lemmas (instances and the projections and recursors Lean generates are not definitions in this sense)."
+rationale = "Invariant I5, no upstream unfolding. A definition that Lean can unfold is an interface that cannot change without breaking every proof that looked inside it. Irreducible plus API lemmas makes the lemmas the interface, so the representation can be replaced, and a prover cannot get lost in a body it was never meant to read."
+tiebreak = "scales"
+
+[[rule]]
+id = "no-peek"
+summary = "A proof does not unfold a definition Tengai does not own: no `unseal`, no `delta`, and no foreign definition as an argument of `unfold`, `simp`, `simp_all`, `dsimp` or `rw`."
+rationale = "Invariant I5. Looking inside a definition of Mathlib, core or Tengoku ties a Tengai proof to that definition's body, which they are free to change. The API lemmas of that definition are the contract; a proof that needs more asks for a new lemma."
+tiebreak = "least-hidden-search"

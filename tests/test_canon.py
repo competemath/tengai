@@ -60,8 +60,30 @@ class Canon(unittest.TestCase):
                 ("name-type", "Fixtures.bad_type"),
                 ("global-simp", "Fixtures.bad_global_simp"),
                 ("global-instance", "Fixtures.bad_global_instance"),
+                ("def-irreducible", "Fixtures.bad_open_def"),
             },
         )
+
+    def test_no_peek_finds_each_bad_proof_and_no_good_one(self):
+        """`--source`: the rule on source text. A `bad_*` theorem of tests/peek/peek.lean unfolds a definition Tengai does not own (the `unseal ... in` is on the line above its theorem)."""
+        lines = (ROOT / "tests" / "peek" / "peek.lean").read_text(encoding="utf-8").splitlines()
+        expected = set()
+        for i, ln in enumerate(lines, start=1):
+            if ln.startswith("theorem bad_"):
+                expected.add(i - 1 if ln.startswith("theorem bad_unseal") else i)
+        self.assertEqual(len(expected), 7)
+        r = canon("--source", "tests/peek/peek.lean")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        found = set()
+        for ln in r.stdout.splitlines():
+            rid, what = ln.split("\t")[1:3]
+            self.assertEqual(rid, "no-peek", ln)
+            found.add(int(what.rsplit(":", 1)[1]))
+        self.assertEqual(found, expected, r.stdout)
+
+    def test_a_source_without_a_peek_passes(self):
+        r = canon("--source", "Tengai.lean")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_the_library_itself_is_canonical(self):
         r = canon("--module", "Tengai")

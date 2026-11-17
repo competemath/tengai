@@ -20,6 +20,8 @@ inductive bad_type where
 
 instance bad_global_instance : Inhabited Bool := ⟨true⟩
 
+def bad_open_def (n : Nat) : Nat := n + 1
+
 theorem good_lt (a b : Nat) (h : a < b) : a < b := h
 
 theorem good_ne (a b : Nat) (h : a ≠ b) : a ≠ b := h
@@ -27,6 +29,8 @@ theorem good_ne (a b : Nat) (h : a ≠ b) : a ≠ b := h
 theorem good_add (n : Nat) : n + 1 = n + 1 := rfl
 
 theorem good_name' (n : Nat) : n = n := rfl
+
+@[irreducible] def good_irreducible_def (n : Nat) : Nat := n + 1
 
 inductive GoodType where
   | mk : GoodType

@@ -51,7 +51,7 @@ jobs:
         run: |
           lake build tengai-canon TengaiFixtures 2>&1 | tail -20
           python3 tests/test_canon.py
-      - name: The normaliser (golden file, idempotence, meaning kept by isDefEq) and the library is already normalised
+      - name: The normaliser (golden file, idempotence, meaning kept by isDefEq); the library is already normalised and has no peek (I5, on source)
         run: |
           lake build tengai-normalise 2>&1 | tail -20
           python3 tests/test_normalise.py
@@ -59,7 +59,10 @@ jobs:
           if [ -d Tengai ]; then
             while IFS= read -r -d '' f; do files+=("$f"); done < <(find Tengai -name '*.lean' -print0)
           fi
-          for f in "${files[@]}"; do lake exe tengai-normalise --check "$f"; done
+          for f in "${files[@]}"; do
+            lake exe tengai-normalise --check "$f"
+            lake exe tengai-canon --source "$f"
+          done
       - name: The toolchain is the one the file names
         run: test "$(lake env lean --version | grep -o '4\.[0-9.]*\(-rc[0-9]*\)\?' | head -1)" = "$(sed 's/.*v//' lean-toolchain)"
 

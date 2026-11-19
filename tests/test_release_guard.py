@@ -130,6 +130,24 @@ class ChangedMode(Fixture):
             git(self.root, "checkout", "--", rel)
 
 
+class WatchList(Fixture):
+    def test_the_list_comes_from_base_and_a_pull_request_cannot_shrink_it(self):
+        self.write("release-guard.toml", 'max_major = 0\nguard_files = ["extra/watched.txt"]\n')
+        self.write("extra/watched.txt", "a\n")
+        self.write("tools/release_guard.py", "# x\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "watch list")
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, capture_output=True, text=True, check=True).stdout.strip()
+        self.write("tools/release_guard.py", "# changed but not on base's list\n")
+        self.assertEqual(run(self.root, "--changed", base).returncode, 0)
+        self.write("extra/watched.txt", "b\n")
+        self.assertEqual(run(self.root, "--changed", base).returncode, 3)
+        git(self.root, "checkout", "--", "extra/watched.txt")
+        # the pull request empties the list in its own copy of the config: the config itself is always watched
+        self.write("release-guard.toml", "max_major = 0\n")
+        self.assertEqual(run(self.root, "--changed", base).returncode, 3)
+
+
 class ThisRepository(unittest.TestCase):
     def test_this_repository_passes_its_own_guard(self):
         r = run(ROOT)

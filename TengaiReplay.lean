@@ -387,17 +387,24 @@ structure ExtCounts where
   projections : Nat := 0
   classes : Nat := 0
   instances : Nat := 0
+  /-- entries that could not be applied (the reason of the first ones goes to stderr): an entry that Lean refuses is counted, it does not stop a replay of a hundred thousand constants -/
+  failed : Nat := 0
   deriving ToJson
 
 open Meta in
-/-- put the extension entries back: reducibility first (instance registration reads it), then projection info, classes, then instances -/
-def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM ExtCounts := do
+/-- put the extension entries back: reducibility first (instance registration reads it), then projection info, classes, then instances. A refused entry is counted and its reason kept (the first 25). -/
+def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array String) := do
   let mut c : ExtCounts := {}
+  let mut errors : Array String := #[]
   for r in rows do
     if let .ok st := r.getObjValAs? String "red" then
       let n ← nameOfJson (← obj r "n")
-      setReducibilityStatus n (← reducibilityOfString st)
-      c := { c with reducibility := c.reducibility + 1 }
+      try
+        setReducibilityStatus n (← reducibilityOfString st)
+        c := { c with reducibility := c.reducibility + 1 }
+      catch ex =>
+        c := { c with failed := c.failed + 1 }
+        if errors.size < 25 then errors := errors.push s!"reducibility {n}: {← ex.toMessageData.toString}"
   for r in rows do
     if has r "proj" then
       let n ← nameOfJson (← obj r "n")
@@ -412,17 +419,24 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM ExtCounts := do
     if has r "class" then
       let n ← nameOfJson (← obj r "n")
       match addClass (← getEnv) n with
-      | .ok env => setEnv env
-      | .error m => throwError m
-      c := { c with classes := c.classes + 1 }
+      | .ok env =>
+        setEnv env
+        c := { c with classes := c.classes + 1 }
+      | .error m =>
+        c := { c with failed := c.failed + 1 }
+        if errors.size < 25 then errors := errors.push s!"class {n}: {← m.toString}"
   for r in rows do
     if has r "inst" then
       let n ← nameOfJson (← obj r "n")
       let p ← obj r "inst"
       let prio ← nat p "prio"
-      addInstance n (if scopedInst then AttributeKind.scoped else AttributeKind.global) prio
-      c := { c with instances := c.instances + 1 }
-  pure c
+      try
+        addInstance n (if scopedInst then AttributeKind.scoped else AttributeKind.global) prio
+        c := { c with instances := c.instances + 1 }
+      catch ex =>
+        c := { c with failed := c.failed + 1 }
+        if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
+  pure (c, errors)
 
 def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]"
 
@@ -469,7 +483,8 @@ unsafe def main (args : List String) : IO UInt32 := do
         match Json.parse ln with
         | .ok j => return some j
         | .error e => fail s!"ext line is not JSON: {e}"
-      let (c, cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
+      let ((c, errs), cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
+      for e in errs do IO.eprintln s!"ext: {e}"
       counts := some c
       cur := cst.env
     let modName := opts.module.toName

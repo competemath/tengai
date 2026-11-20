@@ -173,10 +173,12 @@ def constantVal (t : Tables) (v : Json) : IO ConstantVal := do
   let ty ← getExpr t (← nat v "type")
   pure { name := n, levelParams := ps, type := ty }
 
-/-- the term without expression metadata (`@& Nat` is `mdata` around `Nat`: the export drops it, the kernel never looks at it) -/
+/-- the term as the kernel reads it, for comparing a constant with one Lean core already holds: without expression metadata (`@& Nat` is `mdata` around `Nat`; the export drops it)
+and without the `have`/`let` flag (Lean core marks a `have` as non-dependent, the pinned exporter writes `false`; the kernel treats both alike). Only comparisons use this; replayed terms are as exported. -/
 partial def stripMData (e : Expr) : Expr :=
   e.replace fun s => match s with
     | .mdata _ b => some (stripMData b)
+    | .letE n t v b _ => some (.letE n (stripMData t) (stripMData v) (stripMData b) false)
     | _ => none
 
 /-- the first subterm where two terms differ (the diagnostic of a refused comparison) -/
@@ -207,7 +209,7 @@ partial def firstDiff (a b : Expr) : String :=
 def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
   match env.find? n with
   | none => pure false
-  | some ci => if stripMData ci.type == type then pure true else fail s!"{n} is in the environment with another type\n first difference: {firstDiff (stripMData ci.type) type}"
+  | some ci => if stripMData ci.type == stripMData type then pure true else fail s!"{n} is in the environment with another type\n first difference: {firstDiff (stripMData ci.type) (stripMData type)}"
 
 def addDecl (env : Environment) (d : Declaration) : IO Environment :=
   -- no heartbeat limit (0), the default recursion depth: the kernel is the judge, not a timer
@@ -247,7 +249,7 @@ def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO 
     let rn ← getName t (← nat r "name")
     let rt ← getExpr t (← nat r "type")
     match env.find? rn with
-    | some ci => if stripMData ci.type != rt then fail s!"the recursor {rn} differs from the exported one"
+    | some ci => if stripMData ci.type != stripMData rt then fail s!"the recursor {rn} differs from the exported one"
     | none => fail s!"the recursor {rn} was not derived"
   pure (env, { st with added := st.added + 1, inductives := st.inductives + 1 })
 

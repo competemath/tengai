@@ -186,17 +186,21 @@ partial def firstDiff (a b : Expr) : String :=
   | .app f x, .app g y =>
     let d := firstDiff f g
     if d.isEmpty then firstDiff x y else d
-  | .lam _ t1 b1 _, .lam _ t2 b2 _ =>
+  | .lam n1 t1 b1 i1, .lam n2 t2 b2 i2 =>
     let d := firstDiff t1 t2
-    if d.isEmpty then firstDiff b1 b2 else d
-  | .forallE _ t1 b1 _, .forallE _ t2 b2 _ =>
+    let d := if d.isEmpty then firstDiff b1 b2 else d
+    if d.isEmpty then s!"lam binder: name {n1} vs {n2}, info {repr i1} vs {repr i2}, domain {(toString t1).take 120}" else d
+  | .forallE n1 t1 b1 i1, .forallE n2 t2 b2 i2 =>
     let d := firstDiff t1 t2
-    if d.isEmpty then firstDiff b1 b2 else d
-  | .letE _ t1 v1 b1 _, .letE _ t2 v2 b2 _ =>
+    let d := if d.isEmpty then firstDiff b1 b2 else d
+    if d.isEmpty then s!"forall binder: name {n1} vs {n2}, info {repr i1} vs {repr i2}, domain {(toString t1).take 120}" else d
+  | .letE n1 t1 v1 b1 d1, .letE n2 t2 v2 b2 d2 =>
     let d := firstDiff t1 t2
     let d := if d.isEmpty then firstDiff v1 v2 else d
-    if d.isEmpty then firstDiff b1 b2 else d
-  | .proj _ i x, .proj _ j y => if i != j then s!"proj index {i} vs {j}" else firstDiff x y
+    let d := if d.isEmpty then firstDiff b1 b2 else d
+    if d.isEmpty then s!"let: name {n1} vs {n2}, nondep {d1} vs {d2}" else d
+  | .proj s1 i x, .proj s2 j y =>
+    if s1 != s2 || i != j then s!"proj {s1}.{i} vs {s2}.{j}" else firstDiff x y
   | _, _ => s!"{(toString a).take 300}  <>  {(toString b).take 300}"
 
 /-- true when Lean core already holds the constant (then its type must be the exported one) -/

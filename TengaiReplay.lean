@@ -180,7 +180,8 @@ def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
   | some ci => if ci.type == type then pure true else fail s!"{n} is in the environment with another type"
 
 def addDecl (env : Environment) (d : Declaration) : IO Environment :=
-  match env.addDecl {} d with
+  -- no heartbeat limit (0), the default recursion depth: the kernel is the judge, not a timer
+  match env.addDeclCore 0 512 d none with
   | .ok e => pure e
   | .error ex => do fail s!"the kernel refused a declaration: {← (ex.toMessageData {}).toString}"
 
@@ -278,7 +279,7 @@ def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Envi
 partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats) : IO (Environment × Stats) := do
   let line ← h.getLine
   if line.isEmpty then return (env, st)
-  let line := line.trimRight
+  let line := line.trimAsciiEnd.copy
   if line.isEmpty then return (← loop h t env st)
   let o ← match Json.parse line with
     | .ok j => pure j

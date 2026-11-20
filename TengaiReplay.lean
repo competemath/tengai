@@ -250,7 +250,9 @@ def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO 
     let rt ← getExpr t (← nat r "type")
     match env.find? rn with
     | some ci => if stripMData ci.type != stripMData rt then fail s!"the recursor {rn} differs from the exported one"
-    | none => fail s!"the recursor {rn} was not derived"
+    | none =>
+      let added := env.constants.foldStage2 (fun acc n _ => if firstName.isPrefixOf n then acc.push n else acc) #[]
+      fail s!"the recursor {rn} was not derived; added under {firstName}: {added}"
   pure (env, { st with added := st.added + 1, inductives := st.inductives + 1 })
 
 def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Environment × Stats) := do

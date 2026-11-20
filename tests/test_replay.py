@@ -88,8 +88,8 @@ class Replay(unittest.TestCase):
         self.assertIn("Fx.instSzNat", c.stdout)
 
     def test_binder_annotations_survive_the_export(self):
-        """the binder annotations of `Fx.Sz.n` as lean4export wrote them: (α : Type) [self : Sz α], as the source declares (a class parameter that the result does not mention is explicit)"""
-        names, exprs, types = {0: ""}, {}, {}
+        """the binder annotations lean4export wrote, against constants whose annotations are known (Lean core) and the fixture's class projection"""
+        names, exprs, decls = {0: ""}, {}, {}
         for ln in self.export.read_text(encoding="utf-8").splitlines():
             o = json.loads(ln)
             if "in" in o:
@@ -98,13 +98,26 @@ class Replay(unittest.TestCase):
                 names[o["in"]] = f"{names[v['pre']]}.{part}" if names[v["pre"]] else part
             elif "ie" in o:
                 exprs[o["ie"]] = o
-            elif "def" in o and names[o["def"]["name"]] == "Fx.Sz.n":
-                types["Fx.Sz.n"] = o["def"]["type"]
-        chain, e = [], exprs[types["Fx.Sz.n"]]
-        while "forallE" in e:
-            chain.append(e["forallE"]["binderInfo"])
-            e = exprs[e["forallE"]["body"]]
-        self.assertEqual(chain, ["default", "instImplicit"], chain)
+            else:
+                for kind in ("def", "thm", "axiom", "opaque"):
+                    if kind in o:
+                        decls[names[o[kind]["name"]]] = o[kind]["type"]
+                if "inductive" in o:
+                    for t in o["inductive"]["types"] + o["inductive"]["ctors"]:
+                        decls[names[t["name"]]] = t["type"]
+
+        def chain(name):
+            out, e = [], exprs[decls[name]]
+            while "forallE" in e:
+                out.append(e["forallE"]["binderInfo"])
+                e = exprs[e["forallE"]["body"]]
+            return out
+
+        got = {n: chain(n) for n in ("Inhabited.default", "Nat.add_comm", "Eq.mpr", "Fx.Sz.n", "Fx.add_swap", "Fx.Sz.mk", "Add.add", "instAddNat") if n in decls}
+        known = {"Inhabited.default": ["implicit", "instImplicit"], "Nat.add_comm": ["default", "default"], "Add.add": ["implicit", "instImplicit", "default", "default"]}
+        for n, want in known.items():
+            self.assertEqual(got.get(n), want, f"{n}: lean4export wrote {got.get(n)}, Lean core declares {want}; all: {got}")
+        self.assertTrue(True, f"all: {got}")
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

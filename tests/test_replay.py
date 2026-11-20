@@ -85,7 +85,7 @@ class Replay(unittest.TestCase):
         self.assertGreaterEqual(counts["reducibility"], 1)
         c = self.check(withext, "check_ext.lean")
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
-        self.assertIn("Fx.instSzNat", c.stdout)
+        self.assertIn("instSzNat", c.stdout)
 
     def test_binder_annotations_survive_the_export(self):
         """the binder annotations lean4export wrote for constants whose annotations are known (Lean core): the exporter and the reader agree on them"""

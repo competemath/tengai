@@ -349,27 +349,134 @@ partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats
     let (env, st) ← readDecl t env o st
     loop h t env st
 
-def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR"
+/-! ## Extension entries: what the kernel does not hold but elaboration needs
+
+A replayed module holds kernel constants and nothing else. `tengai-extinfo` reads, in the environment the constants came from, what Lean keeps about them outside the kernel (reducibility, class and instance
+registration, projection functions) as one JSON line per constant, and `--ext` puts that back. Instances are global by default (without them `#synth Field ℝ` finds nothing and a lemma cannot be applied to a
+concrete goal); `--scoped-instances` registers them as scoped to the namespace of the module, for a library that wants them inactive until opened. Simp lemmas, notation and every other attribute are not carried. -/
+
+def nameOfJson (j : Json) : IO Name := do
+  let arr ← match j.getArr? with
+    | .ok a => pure a
+    | .error e => fail s!"a name is an array of components: {e}"
+  let mut n := Name.anonymous
+  for c in arr do
+    match c with
+    | Json.str s => n := Name.str n s
+    | Json.num k => n := Name.num n k.mantissa.toNat
+    | _ => fail "a name component is a string or a number"
+  pure n
+
+def nameToJson (n : Name) : Json :=
+  Json.arr (n.components.toArray.map fun c => match c with
+    | .str _ s => Json.str s
+    | .num _ k => Json.num (JsonNumber.fromNat k)
+    | _ => Json.null)
+
+def reducibilityOfString (s : String) : IO ReducibilityStatus :=
+  match s with
+  | "reducible" => pure ReducibilityStatus.reducible
+  | "semireducible" => pure ReducibilityStatus.semireducible
+  | "irreducible" => pure ReducibilityStatus.irreducible
+  | "implicitReducible" => pure ReducibilityStatus.implicitReducible
+  | "instanceReducible" => pure ReducibilityStatus.instanceReducible
+  | _ => fail s!"reducibility {s}"
+
+structure ExtCounts where
+  reducibility : Nat := 0
+  projections : Nat := 0
+  classes : Nat := 0
+  instances : Nat := 0
+  deriving ToJson
+
+open Meta in
+/-- put the extension entries back: reducibility first (instance registration reads it), then projection info, classes, then instances -/
+def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM ExtCounts := do
+  let mut c : ExtCounts := {}
+  for r in rows do
+    if let .ok st := r.getObjValAs? String "red" then
+      let n ← nameOfJson (← obj r "n")
+      setReducibilityStatus n (← reducibilityOfString st)
+      c := { c with reducibility := c.reducibility + 1 }
+  for r in rows do
+    if has r "proj" then
+      let n ← nameOfJson (← obj r "n")
+      let p ← obj r "proj"
+      let ctor ← nameOfJson (← obj p "ctor")
+      let np ← nat p "np"
+      let i ← nat p "i"
+      let fromClass ← bool p "cls"
+      modifyEnv fun env => addProjectionFnInfo env n ctor np i fromClass
+      c := { c with projections := c.projections + 1 }
+  for r in rows do
+    if has r "class" then
+      let n ← nameOfJson (← obj r "n")
+      match addClass (← getEnv) n with
+      | .ok env => setEnv env
+      | .error m => throwError m
+      c := { c with classes := c.classes + 1 }
+  for r in rows do
+    if has r "inst" then
+      let n ← nameOfJson (← obj r "n")
+      let p ← obj r "inst"
+      let prio ← nat p "prio"
+      addInstance n (if scopedInst then AttributeKind.scoped else AttributeKind.global) prio
+      c := { c with instances := c.instances + 1 }
+  pure c
+
+def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]"
+
+structure Opts where
+  export_ : String := ""
+  module : String := ""
+  out : String := ""
+  added : Option String := none
+  ext : Option String := none
+  scopedInst : Bool := false
+
+partial def parseArgs (o : Opts) : List String → Except String Opts
+  | [] => if o.export_.isEmpty || o.module.isEmpty || o.out.isEmpty then .error usage else .ok o
+  | "--module" :: v :: r => parseArgs { o with module := v } r
+  | "--out" :: v :: r => parseArgs { o with out := v } r
+  | "--added" :: v :: r => parseArgs { o with added := some v } r
+  | "--ext" :: v :: r => parseArgs { o with ext := some v } r
+  | "--scoped-instances" :: r => parseArgs { o with scopedInst := true } r
+  | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
 
 end TengaiReplay
 
 open TengaiReplay in
 unsafe def main (args : List String) : IO UInt32 := do
-  match args with
-  | [export_, "--module", m, "--out", out] =>
+  match parseArgs {} args with
+  | .error e =>
+    IO.eprintln e
+    return 2
+  | .ok opts =>
     enableInitializersExecution
     initSearchPath (← findSysroot)
     let env ← importModules #[{ module := `Init }] {} (loadExts := true)
-    let h ← IO.FS.Handle.mk export_ IO.FS.Mode.read
-    let (env, st) ← loop h {} env {}
-    let modName := m.toName
-    let env := env.setMainModule modName
+    let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
+    let (replayed, st) ← loop h {} env {}
+    -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
+    if let some f := opts.added then
+      let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]
+      IO.FS.writeFile f (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
+    let mut counts : Option ExtCounts := none
+    let mut cur := replayed
+    if let some f := opts.ext then
+      let rows ← (← IO.FS.lines f).filterMapM fun ln => do
+        if ln.trimAscii.isEmpty then return none
+        match Json.parse ln with
+        | .ok j => return some j
+        | .error e => fail s!"ext line is not JSON: {e}"
+      let (c, cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
+      counts := some c
+      cur := cst.env
+    let modName := opts.module.toName
+    let env := cur.setMainModule modName
     let rel := String.intercalate "/" (modName.components.map toString) ++ ".olean"
-    let path : System.FilePath := (System.FilePath.mk out) / rel
+    let path : System.FilePath := (System.FilePath.mk opts.out) / rel
     if let some p := path.parent then IO.FS.createDirAll p
     writeModule env path
-    IO.println (toJson st).compress
+    IO.println (Json.mkObj [("replay", toJson st), ("ext", match counts with | some c => toJson c | none => Json.null)]).compress
     return 0
-  | _ =>
-    IO.eprintln usage
-    return 2

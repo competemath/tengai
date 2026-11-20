@@ -31,3 +31,9 @@ supportInterpreter = true
 name = "tengai-replay"
 root = "TengaiReplay"
 supportInterpreter = true
+
+# What Lean keeps about a constant outside the kernel (reducibility, classes, instances, projection info), read where the constants came from and put back by `tengai-replay --ext`. It imports Lean.
+[[lean_exe]]
+name = "tengai-extinfo"
+root = "TengaiExtInfo"
+supportInterpreter = true

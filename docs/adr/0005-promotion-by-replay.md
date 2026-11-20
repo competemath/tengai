@@ -15,5 +15,6 @@ no attribute): a replayed module is searchable, and active only through the scop
 
 ## Consequences
 - The source of a promoted theorem is its export (hashed, in `data/`), not a Lean file; readable statements come from the statement text carried by Tengoku's record and are checked against the replayed constant by isnad id (the promotion lens, ADR-0003).
+- A replayed constant has no compiled code (no IR): it can be checked, applied and rewritten with, not evaluated. That is all a prover needs; anything that must run is written in Tengai itself.
 - An independent checker re-checks the `.olean` snapshot (I1), as Tengoku's nightly does.
 - Whether the foundation fits C_load is measured next on a built module; if it does not, the foundation is trimmed (fewer, higher-leverage theorems), never the cap.

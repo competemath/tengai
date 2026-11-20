@@ -391,7 +391,7 @@ structure ExtCounts where
 
 open Meta in
 /-- put the extension entries back: reducibility first (instance registration reads it), then projection info, classes, then instances -/
-def applyExt (rows : Array Json) (scoped : Bool) : MetaM ExtCounts := do
+def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM ExtCounts := do
   let mut c : ExtCounts := {}
   for r in rows do
     if let .ok st := r.getObjValAs? String "red" then
@@ -420,7 +420,7 @@ def applyExt (rows : Array Json) (scoped : Bool) : MetaM ExtCounts := do
       let n ← nameOfJson (← obj r "n")
       let p ← obj r "inst"
       let prio ← nat p "prio"
-      addInstance n (if scoped then AttributeKind.scoped else AttributeKind.global) prio
+      addInstance n (if scopedInst then AttributeKind.scoped else AttributeKind.global) prio
       c := { c with instances := c.instances + 1 }
   pure c
 
@@ -432,7 +432,7 @@ structure Opts where
   out : String := ""
   added : Option String := none
   ext : Option String := none
-  scoped : Bool := false
+  scopedInst : Bool := false
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
   | [] => if o.export_.isEmpty || o.module.isEmpty || o.out.isEmpty then .error usage else .ok o
@@ -440,7 +440,7 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--out" :: v :: r => parseArgs { o with out := v } r
   | "--added" :: v :: r => parseArgs { o with added := some v } r
   | "--ext" :: v :: r => parseArgs { o with ext := some v } r
-  | "--scoped-instances" :: r => parseArgs { o with scoped := true } r
+  | "--scoped-instances" :: r => parseArgs { o with scopedInst := true } r
   | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
 
 end TengaiReplay
@@ -456,24 +456,24 @@ unsafe def main (args : List String) : IO UInt32 := do
     initSearchPath (← findSysroot)
     let env ← importModules #[{ module := `Init }] {} (loadExts := true)
     let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
-    let (env, st) ← loop h {} env {}
+    let (replayed, st) ← loop h {} env {}
     -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
     if let some f := opts.added then
-      let names := env.constants.foldStage2 (fun acc n _ => acc.push n) #[]
+      let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]
       IO.FS.writeFile f (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
     let mut counts : Option ExtCounts := none
-    let mut env := env
+    let mut cur := replayed
     if let some f := opts.ext then
       let rows ← (← IO.FS.lines f).filterMapM fun ln => do
         if ln.trimAscii.isEmpty then return none
         match Json.parse ln with
         | .ok j => return some j
         | .error e => fail s!"ext line is not JSON: {e}"
-      let (c, cst) ← ((applyExt rows opts.scoped).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := env }
+      let (c, cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
       counts := some c
-      env := cst.env
+      cur := cst.env
     let modName := opts.module.toName
-    let env := env.setMainModule modName
+    let env := cur.setMainModule modName
     let rel := String.intercalate "/" (modName.components.map toString) ++ ".olean"
     let path : System.FilePath := (System.FilePath.mk opts.out) / rel
     if let some p := path.parent then IO.FS.createDirAll p

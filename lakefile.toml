@@ -25,3 +25,9 @@ name = "TengaiFixtures"
 name = "tengai-normalise"
 root = "TengaiNormalise"
 supportInterpreter = true
+
+# Content from a Tengoku export becomes a built `.olean` through the kernel (ADR-0005). It imports Lean; no library imports it.
+[[lean_exe]]
+name = "tengai-replay"
+root = "TengaiReplay"
+supportInterpreter = true

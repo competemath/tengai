@@ -33,4 +33,14 @@ theorem fun_ext_ex (f g : Nat → Nat) (h : ∀ x, f x = g x) : f = g := funext 
 
 theorem em_ex (p : Prop) : p ∨ ¬p := Classical.em p
 
+-- what elaboration needs beyond the kernel: a class, an instance, a reducible definition
+class Sz (α : Type) where
+  n : Nat
+
+instance : Sz Nat := ⟨1⟩
+
+@[reducible] def MyNat : Type := Nat
+
+theorem sz_nat : Sz.n Nat = 1 := rfl
+
 end Fx

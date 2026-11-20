@@ -37,14 +37,18 @@ class Replay(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def replay(self, export, out):
-        return run(["lake", "exe", "tengai-replay", str(export), "--module", "TengaiData.Fx", "--out", str(out)], ROOT)
+    def replay(self, export, out, *extra):
+        return run(["lake", "exe", "tengai-replay", str(export), "--module", "TengaiData.Fx", "--out", str(out), *extra], ROOT)
+
+    def check(self, out, name):
+        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+        return run(["lake", "env", "lean", str(ROOT / "tests" / "replay" / name)], ROOT, env=env)
 
     def test_the_fixture_is_replayed_and_used(self):
         out = self.dir / "out"
         r = self.replay(self.export, out)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        stats = json.loads(r.stdout.strip().splitlines()[-1])
+        stats = json.loads(r.stdout.strip().splitlines()[-1])["replay"]
         self.assertGreater(stats["added"], 10)
         self.assertGreater(stats["skipped"], 5)  # Lean core's own constants are not added again
         self.assertGreaterEqual(stats["inductives"], 3)  # Color, Pt, Tree
@@ -56,6 +60,32 @@ class Replay(unittest.TestCase):
         self.assertIn("'Fx.add_swap' does not depend on any axioms", c.stdout)
         self.assertIn("Quot.sound", c.stdout.split("Fx.fun_ext_ex")[1].split("Fx.")[0])
         self.assertIn("Classical.choice", c.stdout.split("Fx.em_ex")[1])
+
+    def test_extension_entries_are_carried_and_without_them_the_goal_fails(self):
+        # negative control: a plain replay holds the kernel constants only, so instance synthesis and reducible unfolding find nothing
+        plain = self.dir / "plain"
+        self.assertEqual(self.replay(self.export, plain).returncode, 0)
+        c = self.check(plain, "check_ext.lean")
+        self.assertNotEqual(c.returncode, 0, c.stdout)
+        self.assertIn("synthesize", c.stdout + c.stderr)
+        # what Lean keeps about the constants, read where they were built, then put back
+        added, ext, withext = self.dir / "added.jsonl", self.dir / "ext.jsonl", self.dir / "withext"
+        self.assertEqual(self.replay(self.export, self.dir / "pass1", "--added", str(added)).returncode, 0)
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "Fx"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        ext.write_text(x.stdout, encoding="utf-8")
+        rows = [json.loads(ln) for ln in x.stdout.splitlines()]
+        kinds = {k for r in rows for k in r if k != "n"}
+        self.assertEqual(kinds, {"red", "proj", "class", "inst"})
+        r = self.replay(self.export, withext, "--ext", str(ext))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
+        self.assertGreaterEqual(counts["instances"], 1)
+        self.assertGreaterEqual(counts["classes"], 1)
+        self.assertGreaterEqual(counts["reducibility"], 1)
+        c = self.check(withext, "check_ext.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        self.assertIn("Fx.instSzNat", c.stdout)
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

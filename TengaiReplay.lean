@@ -183,7 +183,7 @@ partial def stripMData (e : Expr) : Expr :=
 def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
   match env.find? n with
   | none => pure false
-  | some ci => if stripMData ci.type == type then pure true else fail s!"{n} is in the environment with another type"
+  | some ci => if stripMData ci.type == type then pure true else fail s!"{n} is in the environment with another type\n env: {(toString (stripMData ci.type)).take 700}\n export: {(toString type).take 700}"
 
 def addDecl (env : Environment) (d : Declaration) : IO Environment :=
   -- no heartbeat limit (0), the default recursion depth: the kernel is the judge, not a timer

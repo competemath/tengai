@@ -66,6 +66,31 @@ jobs:
       - name: The toolchain is the one the file names
         run: test "$(lake env lean --version | grep -o '4\.[0-9.]*\(-rc[0-9]*\)\?' | head -1)" = "$(sed 's/.*v//' lean-toolchain)"
 
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions: { contents: read }
+    env:
+      LEAN4EXPORT_COMMIT: 483e011449cce37c3f8ad5e2aae434cbb1d2e53c  # pragma: allowlist secret (a commit, not a secret): the commit Tengoku's independent check pins for toolchain v4.34.0-rc2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/0e36a07b9bbcc5381fa6250df109f9a4f94d7bac/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: lean4export at the pinned commit
+        run: |
+          git clone -q https://github.com/leanprover/lean4export "$RUNNER_TEMP/lean4export"
+          git -C "$RUNNER_TEMP/lean4export" checkout -q "$LEAN4EXPORT_COMMIT"
+          cd "$RUNNER_TEMP/lean4export" && lake build 2>&1 | tail -3
+      - name: tengai-replay on a fixture export (kernel-checked, used by name, deterministic, a wrong proof refused)
+        run: |
+          lake build tengai-replay 2>&1 | tail -30
+          LEAN4EXPORT="$RUNNER_TEMP/lean4export/.lake/build/bin/lean4export" python3 tests/test_replay.py -v
+
   layout:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -91,7 +116,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [dco, lean, layout, actionlint]
+    needs: [dco, lean, replay, layout, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}

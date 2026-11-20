@@ -1,0 +1,4 @@
+name = "Fixture"
+
+[[lean_lib]]
+name = "Fx"

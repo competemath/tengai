@@ -88,7 +88,7 @@ class Replay(unittest.TestCase):
         self.assertIn("Fx.instSzNat", c.stdout)
 
     def test_binder_annotations_survive_the_export(self):
-        """the binder annotations lean4export wrote, against constants whose annotations are known (Lean core) and the fixture's class projection"""
+        """the binder annotations lean4export wrote for constants whose annotations are known (Lean core): the exporter and the reader agree on them"""
         names, exprs, decls = {0: ""}, {}, {}
         for ln in self.export.read_text(encoding="utf-8").splitlines():
             o = json.loads(ln)
@@ -117,7 +117,6 @@ class Replay(unittest.TestCase):
         known = {"Inhabited.default": ["implicit", "instImplicit"], "Nat.add_comm": ["default", "default"], "Add.add": ["implicit", "instImplicit", "default", "default"]}
         for n, want in known.items():
             self.assertEqual(got.get(n), want, f"{n}: lean4export wrote {got.get(n)}, Lean core declares {want}; all: {got}")
-        self.assertTrue(True, f"all: {got}")
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

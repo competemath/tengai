@@ -87,6 +87,25 @@ class Replay(unittest.TestCase):
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("Fx.instSzNat", c.stdout)
 
+    def test_binder_annotations_survive_the_export(self):
+        """the binder annotations of `Fx.Sz.n` as lean4export wrote them: (α : Type) [self : Sz α], as the source declares (a class parameter that the result does not mention is explicit)"""
+        names, exprs, types = {0: ""}, {}, {}
+        for ln in self.export.read_text(encoding="utf-8").splitlines():
+            o = json.loads(ln)
+            if "in" in o:
+                v = o.get("str") or o["num"]
+                part = v["str"] if "str" in v else str(v["i"])
+                names[o["in"]] = f"{names[v['pre']]}.{part}" if names[v["pre"]] else part
+            elif "ie" in o:
+                exprs[o["ie"]] = o
+            elif "def" in o and names[o["def"]["name"]] == "Fx.Sz.n":
+                types["Fx.Sz.n"] = o["def"]["type"]
+        chain, e = [], exprs[types["Fx.Sz.n"]]
+        while "forallE" in e:
+            chain.append(e["forallE"]["binderInfo"])
+            e = exprs[e["forallE"]["body"]]
+        self.assertEqual(chain, ["default", "instImplicit"], chain)
+
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"
         self.assertEqual(self.replay(self.export, a).returncode, 0)

@@ -211,10 +211,25 @@ def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
   | none => pure false
   | some ci => if stripMData ci.type == stripMData type then pure true else fail s!"{n} is in the environment with another type\n first difference: {firstDiff (stripMData ci.type) (stripMData type)}"
 
+/-- a name that opens a namespace: `Fx.add_swap` makes `Fx` one (the kernel does not, `Lean.addDecl` does; without it `open Fx` is refused) -/
+partial def isNamespaceName : Name → Bool
+  | .str .anonymous _ => true
+  | .str p _ => isNamespaceName p
+  | _ => false
+
+def registerPrefixes (env : Environment) (name : Name) : Environment :=
+  match name with
+  | .str _ s => if s.front == '_' then env else go env name
+  | _ => env
+where
+  go (env : Environment) : Name → Environment
+    | .str p _ => if isNamespaceName p then go (env.registerNamespace p) p else env
+    | _ => env
+
 def addDecl (env : Environment) (d : Declaration) : IO Environment :=
   -- no heartbeat limit (0), the default recursion depth: the kernel is the judge, not a timer
   match env.addDeclCore 0 512 d none with
-  | .ok e => pure e
+  | .ok e => pure (d.getNames.foldl registerPrefixes e)
   | .error ex => do fail s!"the kernel refused a declaration: {← (ex.toMessageData {}).toString}"
 
 def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO (Environment × Stats) := do

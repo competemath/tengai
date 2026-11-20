@@ -68,9 +68,16 @@ class Replay(unittest.TestCase):
         lines = self.export.read_text(encoding="utf-8").splitlines()
         bad = []
         done = False
+        names = {0: ""}
         for ln in lines:
             o = json.loads(ln)
-            if not done and "thm" in o and o["thm"]["value"] != o["thm"]["type"]:
+            if "in" in o:
+                v = o.get("str") or o["num"]
+                part = v["str"] if "str" in v else str(v["i"])
+                pre = names[v["pre"]]
+                names[o["in"]] = f"{pre}.{part}" if pre else part
+            # a theorem of the fixture, not one of Lean core (a core constant is skipped, so corrupting it proves nothing)
+            if not done and "thm" in o and names[o["thm"]["name"]] == "Fx.add_swap":
                 o["thm"]["value"] = o["thm"]["type"]
                 done = True
             bad.append(json.dumps(o, separators=(",", ":")))

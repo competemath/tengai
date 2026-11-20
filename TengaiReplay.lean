@@ -179,11 +179,31 @@ partial def stripMData (e : Expr) : Expr :=
     | .mdata _ b => some (stripMData b)
     | _ => none
 
+/-- the first subterm where two terms differ (the diagnostic of a refused comparison) -/
+partial def firstDiff (a b : Expr) : String :=
+  if a == b then "" else
+  match a, b with
+  | .app f x, .app g y =>
+    let d := firstDiff f g
+    if d.isEmpty then firstDiff x y else d
+  | .lam _ t1 b1 _, .lam _ t2 b2 _ =>
+    let d := firstDiff t1 t2
+    if d.isEmpty then firstDiff b1 b2 else d
+  | .forallE _ t1 b1 _, .forallE _ t2 b2 _ =>
+    let d := firstDiff t1 t2
+    if d.isEmpty then firstDiff b1 b2 else d
+  | .letE _ t1 v1 b1 _, .letE _ t2 v2 b2 _ =>
+    let d := firstDiff t1 t2
+    let d := if d.isEmpty then firstDiff v1 v2 else d
+    if d.isEmpty then firstDiff b1 b2 else d
+  | .proj _ i x, .proj _ j y => if i != j then s!"proj index {i} vs {j}" else firstDiff x y
+  | _, _ => s!"{(toString a).take 300}  <>  {(toString b).take 300}"
+
 /-- true when Lean core already holds the constant (then its type must be the exported one) -/
 def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
   match env.find? n with
   | none => pure false
-  | some ci => if stripMData ci.type == type then pure true else fail s!"{n} is in the environment with another type\n env: {(toString (stripMData ci.type)).take 700}\n export: {(toString type).take 700}"
+  | some ci => if stripMData ci.type == type then pure true else fail s!"{n} is in the environment with another type\n first difference: {firstDiff (stripMData ci.type) type}"
 
 def addDecl (env : Environment) (d : Declaration) : IO Environment :=
   -- no heartbeat limit (0), the default recursion depth: the kernel is the judge, not a timer

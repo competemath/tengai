@@ -207,7 +207,7 @@ partial def firstDiff (a b : Expr) : String :=
 
 /-- true when Lean core already holds the constant (then its type must be the exported one) -/
 def alreadyThere (env : Environment) (n : Name) (type : Expr) : IO Bool :=
-  match env.find? n with
+  match env.toKernelEnv.find? n with
   | none => pure false
   | some ci => if stripMData ci.type == stripMData type then pure true else fail s!"{n} is in the environment with another type\n first difference: {firstDiff (stripMData ci.type) (stripMData type)}"
 
@@ -248,7 +248,7 @@ def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO 
   for r in recs do
     let rn ← getName t (← nat r "name")
     let rt ← getExpr t (← nat r "type")
-    match env.find? rn with
+    match env.toKernelEnv.find? rn with
     | some ci => if stripMData ci.type != stripMData rt then fail s!"the recursor {rn} differs from the exported one"
     | none =>
       let added := env.constants.foldStage2 (fun acc n _ => if firstName.isPrefixOf n then acc.push n else acc) #[]

@@ -133,8 +133,10 @@ class Replay(unittest.TestCase):
         self.assertEqual(len(a), 2)
         for x, y in zip(a, b):
             self.assertNotIn("missing", x)
-            # the replay keeps every binder and annotation; the node count may be smaller by the expression metadata it drops
-            self.assertEqual(x["binders"], y["binders"], x["n"])
+            # the replay keeps every binder, annotation and head constant; the node count may be smaller by the expression metadata it drops.
+            # Binder NAMES are not compared: lean4export shares alpha-equivalent terms and keeps the first it saw (Fx.add_swap comes back with Nat.add_comm's `n m`, not its own `a b`)
+            shape = lambda r: [(b["info"], b["head"]) for b in r["binders"]]  # noqa: E731
+            self.assertEqual(shape(x), shape(y), x["n"])
             self.assertEqual(x["size"] - x["mdata"], y["size"] - y["mdata"], x["n"])
 
     def test_the_replay_is_deterministic(self):

@@ -87,35 +87,57 @@ class Replay(unittest.TestCase):
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("instSzNat", c.stdout)
 
-    def test_structure_information_is_carried_and_without_it_the_notation_fails(self):
-        """`{ x := 1 }`, `{ p with x := 2 }` and `p.x` through a parent read a structure's field information, which Lean keeps outside the kernel like instances and reducibility."""
-        added, ext = self.dir / "sadded.jsonl", self.dir / "sext.jsonl"
-        self.assertEqual(self.replay(self.export, self.dir / "spass1", "--added", str(added)).returncode, 0)
+    def extinfo(self, export, tag):
+        """the replay's first pass names what it added, tengai-extinfo reads what Lean keeps about those constants where they were built: the rows of an `--ext` file"""
+        added = self.dir / f"{tag}-added.jsonl"
+        self.assertEqual(self.replay(export, self.dir / f"{tag}-pass1", "--added", str(added)).returncode, 0)
         x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "Fx"], FIXTURE)
         self.assertEqual(x.returncode, 0, x.stderr)
-        ext.write_text(x.stdout, encoding="utf-8")
-        rows = [json.loads(ln) for ln in x.stdout.splitlines()]
+        return [json.loads(ln) for ln in x.stdout.splitlines()]
+
+    def write_rows(self, rows, name):
+        path = self.dir / name
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows if len(r) > 1), encoding="utf-8")
+        return path
+
+    def test_structure_information_is_carried_and_without_it_the_notation_fails(self):
+        """`p.x` through a parent reads a structure's field information, which Lean keeps outside the kernel like instances and reducibility. Structure instance notation reads it too, and the structure's
+        flat constructor, a constant of its own that an export holds only when it is named as a root."""
+        rows = self.extinfo(self.export, "s")
         st = {".".join(str(c) for c in r["n"]): r["st"] for r in rows if "st" in r}
         self.assertEqual(sorted(st), ["Fx.Pt", "Fx.Pt3", "Fx.Sz"])  # the structures and the class of the fixture
         self.assertEqual([f["f"] for f in st["Fx.Pt3"]["fields"]], [["toPt"], ["z"]])
         self.assertEqual(st["Fx.Pt3"]["fields"][0]["sub"], ["Fx", "Pt"])  # the embedded parent
         self.assertEqual(st["Fx.Pt3"]["parents"], [{"s": ["Fx", "Pt"], "sub": True, "proj": ["Fx", "Pt3", "toPt"]}])
         # the control: the same entries without the structure information
-        without = self.dir / "swithout.jsonl"
-        kept = [{k: v for k, v in r.items() if k != "st"} for r in rows]
-        without.write_text("".join(json.dumps(r) + "\n" for r in kept if len(r) > 1), encoding="utf-8")
         plain = self.dir / "sout_plain"
-        r = self.replay(self.export, plain, "--ext", str(without))
+        r = self.replay(self.export, plain, "--ext", str(self.write_rows([{k: v for k, v in r.items() if k != "st"} for r in rows], "swithout.jsonl")))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         c = self.check(plain, "check_struct.lean")
         self.assertNotEqual(c.returncode, 0, c.stdout)
         full = self.dir / "sout_full"
-        r = self.replay(self.export, full, "--ext", str(ext))
+        r = self.replay(self.export, full, "--ext", str(self.write_rows(rows, "swith.jsonl")))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
         self.assertEqual(counts["structures"], 3)
         self.assertEqual(counts["failed"], 0, r.stderr)
         c = self.check(full, "check_struct.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        # structure instance notation, same replay: the default export leaves out the flat constructors (internal names), so it is still refused, and says which constant it wants
+        c = self.check(full, "check_struct_inst.lean")
+        self.assertNotEqual(c.returncode, 0, c.stdout)
+        self.assertIn("_flat_ctor", c.stdout + c.stderr)
+        # an export that names the flat constructors (and the projections, which the notation applies) as roots has them
+        roots = ["Fx.Pt.mk._flat_ctor", "Fx.Pt3.mk._flat_ctor", "Fx.Pt.x", "Fx.Pt.y", "Fx.Pt3.toPt", "Fx.Pt3.z"]
+        e = run(["lake", "env", EXPORTER, "Fx", "--", *roots], FIXTURE)
+        self.assertEqual(e.returncode, 0, e.stderr)
+        flat = self.dir / "fx-flat.ndjson"
+        flat.write_text(e.stdout, encoding="utf-8")
+        frows = self.extinfo(flat, "f")
+        fout = self.dir / "sout_flat"
+        r = self.replay(flat, fout, "--ext", str(self.write_rows(frows, "fwith.jsonl")))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        c = self.check(fout, "check_struct_inst.lean")
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
 
     def test_binder_annotations_survive_the_export(self):

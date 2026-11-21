@@ -70,7 +70,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       | none => IO.println (Json.mkObj [("n", j), ("missing", Json.bool true)]).compress
       | some ci =>
         let (size, mdata) := census ci.type
-        IO.println (Json.mkObj [("n", j), ("size", toJson size), ("mdata", toJson mdata), ("binders", Json.arr (binders ci.type)), ("type", Json.str ((toString ci.type).take 1500))]).compress
+        IO.println (Json.mkObj [("n", j), ("size", toJson size), ("mdata", toJson mdata), ("binders", Json.arr (binders ci.type)), ("type", Json.str ((toString ci.type).take 1500).copy)]).compress
     return 0
   | _ =>
     IO.eprintln "usage: lake env tengai-typeinfo NAMES.jsonl Module..."

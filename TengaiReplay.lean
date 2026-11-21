@@ -444,6 +444,24 @@ unsafe def loadTables (path : System.FilePath) : IO (Tables × Array (Option Nam
   if data.extraConstNames.isEmpty || data.extraConstNames[0]! != Name.anonymous then fail s!"{path} is not a table file of tengai-replay (its names do not start with the anonymous name)"
   pure ({ names := data.extraConstNames, levels := unsafeCast (← entry `levels), exprs := unsafeCast (← entry `exprs) }, unsafeCast (← entry `decls))
 
+/-- The names a replay into `env` (Lean core alone) would add, found without replaying: a declaration whose name `env` already holds is left out, as `alreadyThere` leaves it out; an inductive block adds its
+types, constructors and recursors; the quotient declaration adds its four constants. The kernel is not asked: this decides which names `tengai-extinfo` is asked about, and the replay still checks every declaration. -/
+def addedNames (t : Tables) (env : Environment) (decls : Array (Option Name × Json)) : IO (Array Name) := do
+  let mut out : Array Name := #[]
+  for (first, o) in decls do
+    let some n := first | continue
+    if (env.toKernelEnv.find? n).isSome then continue
+    if has o "inductive" then
+      let v ← obj o "inductive"
+      for k in ["types", "ctors", "recs"] do
+        for x in ← jsonArr v k do
+          out := out.push (← getName t (← nat x "name"))
+    else if has o "quot" then
+      out := out ++ #[``Quot, ``Quot.mk, ``Quot.lift, ``Quot.ind]
+    else
+      out := out.push n
+  pure out
+
 /-! ## Extension entries: what the kernel does not hold but elaboration needs
 
 A replayed module holds kernel constants and nothing else. `tengai-extinfo` reads, in the environment the constants came from, what Lean keeps about them outside the kernel (reducibility, class and instance
@@ -559,7 +577,7 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
   pure (c, errors)
 
-def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]"
+def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]\n       tengai-replay (EXPORT.ndjson | --tables TABLES) --added-only ADDED.jsonl"
 
 structure Opts where
   export_ : String := ""
@@ -575,10 +593,16 @@ structure Opts where
   /-- the parsed export as a file (`--save-tables` writes it, `--tables` replays from it instead of from the export): the parse of a large export is most of the time of a small layer -/
   saveTables : Option String := none
   tables : Option String := none
+  /-- write the names a replay would add (`--added` writes the ones it did add) without replaying: from the export, or from `--tables` -/
+  addedOnly : Option String := none
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
   | [] =>
-    if o.saveTables.isSome then
+    if o.addedOnly.isSome then
+      if o.saveTables.isSome || !o.module.isEmpty || !o.out.isEmpty || !o.imports.isEmpty || o.only.isSome || o.added.isSome || o.ext.isSome || (o.export_.isEmpty && o.tables.isNone) || (!o.export_.isEmpty && o.tables.isSome) then
+        .error "--added-only takes the export or --tables, and nothing else: it writes the names a replay would add"
+      else .ok o
+    else if o.saveTables.isSome then
       if o.export_.isEmpty || o.tables.isSome || !o.module.isEmpty || !o.out.isEmpty || !o.imports.isEmpty || o.only.isSome || o.added.isSome || o.ext.isSome then
         .error "--save-tables takes the export and nothing else: it parses the export and writes the table file"
       else .ok o
@@ -597,6 +621,7 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--only" :: v :: r => parseArgs { o with only := some v } r
   | "--save-tables" :: v :: r => parseArgs { o with saveTables := some v } r
   | "--tables" :: v :: r => parseArgs { o with tables := some v } r
+  | "--added-only" :: v :: r => parseArgs { o with addedOnly := some v } r
   | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
 
 /-- the lines of a JSON-lines file, parsed (blank lines skipped); `what` names the file in an error -/
@@ -692,6 +717,15 @@ unsafe def main (args : List String) : IO UInt32 := do
     let fixes ← match rows with
       | none => pure {}
       | some r => readFixes r
+    if let some file := opts.addedOnly then
+      let (t, decls) ← match opts.tables with
+        | some f => loadTables f
+        | none => loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} #[]
+      let env ← importModules #[{ module := `Init }] {} (loadExts := true)
+      let names ← addedNames t env decls
+      IO.FS.writeFile file (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
+      IO.println (Json.mkObj [("added_only", toJson names.size)]).compress
+      return 0
     if let some file := opts.saveTables then
       -- parse the export once and keep the result: every layer's process then reads this file instead of the export
       let (t, decls) ← loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} #[]

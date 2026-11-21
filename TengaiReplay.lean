@@ -420,6 +420,8 @@ def reducibilityOfString (s : String) : IO ReducibilityStatus :=
 structure ExtCounts where
   reducibility : Nat := 0
   projections : Nat := 0
+  /-- structures and classes whose field information was registered (what `{ x := 1 }` and `{ p with x := 2 }` read) -/
+  structures : Nat := 0
   classes : Nat := 0
   instances : Nat := 0
   /-- entries that could not be applied (the reason of the first ones goes to stderr): an entry that Lean refuses is counted, it does not stop a replay of a hundred thousand constants -/
@@ -450,6 +452,30 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
       let fromClass ← bool p "cls"
       modifyEnv fun env => addProjectionFnInfo env n ctor np i fromClass
       c := { c with projections := c.projections + 1 }
+  for r in rows do
+    if has r "st" then
+      let n ← nameOfJson (← obj r "n")
+      let s ← obj r "st"
+      try
+        let mut fs : Array StructureFieldInfo := #[]
+        for f in ← jsonArr s "fields" do
+          let sub ← obj f "sub"
+          -- a nested `←` is run before the whole statement, so the choice between a name and nothing is made here, as an action
+          let subobject : Option Name ← if sub.isNull then pure none else some <$> nameOfJson sub
+          fs := fs.push {
+            fieldName := ← nameOfJson (← obj f "f")
+            projFn := ← nameOfJson (← obj f "proj")
+            subobject? := subobject
+            binderInfo := ← binderInfo (← str f "bi") }
+        let mut ps : Array StructureParentInfo := #[]
+        for p in ← jsonArr s "parents" do
+          ps := ps.push { structName := ← nameOfJson (← obj p "s"), subobject := ← bool p "sub", projFn := ← nameOfJson (← obj p "proj") }
+        modifyEnv fun env => registerStructure env { structName := n, fields := fs }
+        setStructureParents n ps
+        c := { c with structures := c.structures + 1 }
+      catch ex =>
+        c := { c with failed := c.failed + 1 }
+        if errors.size < 25 then errors := errors.push s!"structure {n}: {← ex.toMessageData.toString}"
   for r in rows do
     if has r "class" then
       let n ← nameOfJson (← obj r "n")

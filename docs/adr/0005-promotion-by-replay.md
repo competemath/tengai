@@ -10,8 +10,14 @@ Content is therefore one shared foundation of about 80,000 constants plus about 
 ## Decision
 A promotion is a **kernel replay** of a `lean4export` file (format 3.x), done by `tengai-replay`: every declaration goes through `addDecl`, so a wrong term is refused whatever produced it (I1); what Lean core already
 holds must have the same type and is not added again; the result is a built `.olean` (`TengaiData.<Topic>`), which a prover imports with the snapshot on `LEAN_PATH`. The release is the `.olean` snapshot
-(`docs/design.md`). The replay tool imports `Lean`; no library module imports it and the modules it writes do not, so the import stays as small as the content. Nothing is registered (no simp set, no instance,
-no attribute): a replayed module is searchable, and active only through the scoped layer of a topic (I4).
+(`docs/design.md`). The replay tool imports `Lean`; no library module imports it and the modules it writes do not, so the import stays as small as the content. What the kernel does not hold but elaboration needs is carried in a second, small file
+(`tengai-extinfo` reads it where the constants were built, `tengai-replay --ext` puts it back): reducibility, projection information, classes, instances (global, or scoped with `--scoped-instances`), structure
+information (the fields and parents: `{ x := 1 }`, `{ p with x := 2 }`, `p.x` through a parent) and the binder names and annotations that the export's term sharing replaced. Nothing else is registered: no simp set,
+no `ext`, `norm_cast` or `elab_as_elim` entry, no notation (macros and elaborators are code, which a replay does not carry). A replayed module is searchable, and those are active only through the scoped layer of
+a topic (I4). Structure instance notation (`{ x := 1 }`, `{ p with x := 2 }`) needs more than the structure information: the structure's flat constructor `S.mk._flat_ctor`, an abbreviation Lean adds with every structure, and its projections.
+These are constants of their own. An export of the closure of some theorems holds them only if a theorem mentions them (the flat constructor has an internal name, so not even the exporter's default mode writes it), so a
+promotion that wants a structure constructible with `{ }` names them as roots (`tests/replay/check_struct_inst.lean` shows an export with and without); the transplant does not do this yet. The default value of a structure field
+(`S.f._default`) is the same kind of constant, and `{ }` notation asks for the fields whose defaults are missing.
 
 ## Consequences
 - The source of a promoted theorem is its export (hashed, in `data/`), not a Lean file; readable statements come from the statement text carried by Tengoku's record and are checked against the replayed constant by isnad id (the promotion lens, ADR-0003).

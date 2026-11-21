@@ -43,6 +43,10 @@ instance : Sz Nat := ⟨1⟩
 
 theorem sz_nat : Sz.n Nat = 1 := rfl
 
+-- structure information: a structure that extends another one (structure instance notation and `p.x` through the parent read it)
+structure Pt3 extends Pt where
+  z : Nat
+
 -- layers: two theorems that share a definition of the fixture's own, the way two topics of a promotion share a foundation
 def shared (n : Nat) : Nat := n + n
 

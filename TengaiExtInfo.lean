@@ -10,6 +10,8 @@ and prints one JSON line for every one of them that has something to carry:
   {"n": [...], "red": "reducible"}                      reducibility other than semireducible
   {"n": [...], "proj": {"ctor": [...], "np": 2, "i": 0, "cls": true}}      a projection function
   {"n": [...], "class": true}                           a class
+  {"n": [...], "st": {"fields": [{"f": [...], "proj": [...], "sub": [...]|null, "bi": "default"}, ...], "parents": [{"s": [...], "sub": true, "proj": [...]}, ...]}}
+                                                        a structure (or class): its fields in constructor order and the parents of its `extends` clause, which structure instance notation (`{ x := 1 }`, `{ p with x := 2 }`) and field access through a parent read
   {"n": [...], "inst": {"prio": 1000, "kind": "global"}}   an instance (local ones are not carried)
   {"n": [...], "bi": [[[...], "instImplicit"], ...]}     the names and annotations of the leading binders of its type (what lean4export may have replaced by those of an equal term)
 
@@ -78,6 +80,15 @@ unsafe def main (args : List String) : IO UInt32 := do
       if let some p := env.getProjectionFnInfo? n then
         fields := fields ++ [("proj", Json.mkObj [("ctor", nameToJson p.ctorName), ("np", toJson p.numParams), ("i", toJson p.i), ("cls", toJson p.fromClass)])]
       if isClass env n then fields := fields ++ [("class", Json.bool true)]
+      if let some si := getStructureInfo? env n then
+        -- the fields in the order of the constructor, each with its projection, whether it embeds a parent, and its annotation; then the parents of the `extends` clause
+        let mut fs : Array Json := #[]
+        for f in si.fieldNames do
+          let some fi := getFieldInfo? env n f | throw (IO.userError s!"structure {n}: no field information for {f}")
+          fs := fs.push (Json.mkObj [("f", nameToJson fi.fieldName), ("proj", nameToJson fi.projFn),
+            ("sub", match fi.subobject? with | some s => nameToJson s | none => Json.null), ("bi", Json.str (infoString fi.binderInfo))])
+        let ps := si.parentInfo.map fun p => Json.mkObj [("s", nameToJson p.structName), ("sub", Json.bool p.subobject), ("proj", nameToJson p.projFn)]
+        fields := fields ++ [("st", Json.mkObj [("fields", Json.arr fs), ("parents", Json.arr ps)])]
       if let some e := (Meta.instanceExtension.getState env).instanceNames.find? n then
         match e.attrKind with
         | .local => pure ()

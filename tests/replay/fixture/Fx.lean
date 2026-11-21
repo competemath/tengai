@@ -43,4 +43,11 @@ instance : Sz Nat := ⟨1⟩
 
 theorem sz_nat : Sz.n Nat = 1 := rfl
 
+-- layers: two theorems that share a definition of the fixture's own, the way two topics of a promotion share a foundation
+def shared (n : Nat) : Nat := n + n
+
+theorem left_use (n : Nat) : shared n = n + n := rfl
+
+theorem right_use (n : Nat) : shared (shared n) = shared n + shared n := rfl
+
 end Fx

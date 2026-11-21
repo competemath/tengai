@@ -152,6 +152,48 @@ class Replay(unittest.TestCase):
             self.assertEqual(x_["binders"], y_["binders"], x_["n"])  # names, annotations and heads
             self.assertEqual(x_["size"] - x_["mdata"], y_["size"] - y_["mdata"], x_["n"])
 
+    def test_a_promotion_in_layers_loads_a_layer_with_what_it_imports_and_no_more(self):
+        # two theorems share a definition: it is the foundation layer, each theorem is a layer of its own that imports it (`--only` names what a layer adds, `--import` what it starts from)
+        out = self.dir / "layers"
+        for stem, names in (("f", ["Fx.shared"]), ("a", ["Fx.left_use"]), ("b", ["Fx.right_use"])):
+            (self.dir / f"{stem}.names").write_text("".join(json.dumps(n.split(".")) + "\n" for n in names))
+        lean_path = f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"
+        env = {**os.environ, "LEAN_PATH": lean_path}
+
+        def layer(module, stem, *imports):
+            cmd = ["lake", "exe", "tengai-replay", str(self.export), "--module", module, "--out", str(out), "--only", str(self.dir / f"{stem}.names")]
+            for m in imports:
+                cmd += ["--import", m]
+            r = run(cmd, ROOT, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return json.loads(r.stdout.strip().splitlines()[-1])["replay"]
+
+        foundation = layer("TengaiData.F", "f")
+        left = layer("TengaiData.A", "a", "TengaiData.F")
+        right = layer("TengaiData.B", "b", "TengaiData.F")
+        # each layer holds exactly the constants it was given; everything else of the export was left out (or is in an imported layer)
+        self.assertEqual((foundation["added"], left["added"], right["added"]), (1, 1, 1))
+        self.assertGreater(foundation["filtered"], 0)
+
+        def check(name):
+            return run(["lake", "env", "lean", str(ROOT / "tests" / "replay" / name)], ROOT, env=env)
+
+        a = check("check_layer_a.lean")
+        self.assertEqual(a.returncode, 0, a.stdout + a.stderr)  # layer A sees its theorem and the foundation it imports
+        self.assertIn("'Fx.left_use' does not depend on any axioms", a.stdout)
+        b = check("check_layer_b.lean")
+        self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
+        self.assertIn("'Fx.right_use' does not depend on any axioms", b.stdout)
+        # layers are independent of each other: A does not pull B in
+        only = check("check_layer_a_only.lean")
+        self.assertNotEqual(only.returncode, 0, only.stdout)
+        self.assertIn("right_use", only.stdout + only.stderr)
+        both = check("check_layer_ab.lean")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        # the replay of a layer is itself kernel-checked: a layer given a constant whose dependency is in no imported layer is refused
+        broken = run(["lake", "exe", "tengai-replay", str(self.export), "--module", "TengaiData.Bad", "--out", str(out), "--only", str(self.dir / "a.names")], ROOT, env=env)
+        self.assertNotEqual(broken.returncode, 0, broken.stdout)  # Fx.left_use without Fx.shared: unknown constant
+
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"
         self.assertEqual(self.replay(self.export, a).returncode, 0)

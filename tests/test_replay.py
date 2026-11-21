@@ -76,7 +76,7 @@ class Replay(unittest.TestCase):
         ext.write_text(x.stdout, encoding="utf-8")
         rows = [json.loads(ln) for ln in x.stdout.splitlines()]
         kinds = {k for r in rows for k in r if k != "n"}
-        self.assertEqual(kinds, {"red", "proj", "class", "inst", "bi"})
+        self.assertEqual(kinds, {"red", "proj", "class", "inst", "bi", "st"})
         r = self.replay(self.export, withext, "--ext", str(ext))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
@@ -86,6 +86,37 @@ class Replay(unittest.TestCase):
         c = self.check(withext, "check_ext.lean")
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("instSzNat", c.stdout)
+
+    def test_structure_information_is_carried_and_without_it_the_notation_fails(self):
+        """`{ x := 1 }`, `{ p with x := 2 }` and `p.x` through a parent read a structure's field information, which Lean keeps outside the kernel like instances and reducibility."""
+        added, ext = self.dir / "sadded.jsonl", self.dir / "sext.jsonl"
+        self.assertEqual(self.replay(self.export, self.dir / "spass1", "--added", str(added)).returncode, 0)
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "Fx"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        ext.write_text(x.stdout, encoding="utf-8")
+        rows = [json.loads(ln) for ln in x.stdout.splitlines()]
+        st = {".".join(str(c) for c in r["n"]): r["st"] for r in rows if "st" in r}
+        self.assertEqual(sorted(st), ["Fx.Pt", "Fx.Pt3", "Fx.Sz"])  # the structures and the class of the fixture
+        self.assertEqual([f["f"] for f in st["Fx.Pt3"]["fields"]], [["toPt"], ["z"]])
+        self.assertEqual(st["Fx.Pt3"]["fields"][0]["sub"], ["Fx", "Pt"])  # the embedded parent
+        self.assertEqual(st["Fx.Pt3"]["parents"], [{"s": ["Fx", "Pt"], "sub": True, "proj": ["Fx", "Pt3", "toPt"]}])
+        # the control: the same entries without the structure information
+        without = self.dir / "swithout.jsonl"
+        kept = [{k: v for k, v in r.items() if k != "st"} for r in rows]
+        without.write_text("".join(json.dumps(r) + "\n" for r in kept if len(r) > 1), encoding="utf-8")
+        plain = self.dir / "sout_plain"
+        r = self.replay(self.export, plain, "--ext", str(without))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        c = self.check(plain, "check_struct.lean")
+        self.assertNotEqual(c.returncode, 0, c.stdout)
+        full = self.dir / "sout_full"
+        r = self.replay(self.export, full, "--ext", str(ext))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
+        self.assertEqual(counts["structures"], 3)
+        self.assertEqual(counts["failed"], 0, r.stderr)
+        c = self.check(full, "check_struct.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
 
     def test_binder_annotations_survive_the_export(self):
         """the binder annotations lean4export wrote for constants whose annotations are known (Lean core): the exporter and the reader agree on them"""

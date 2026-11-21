@@ -18,3 +18,11 @@ no attribute): a replayed module is searchable, and active only through the scop
 - A replayed constant has no compiled code (no IR): it can be checked, applied and rewritten with, not evaluated. That is all a prover needs; anything that must run is written in Tengai itself.
 - An independent checker re-checks the `.olean` snapshot (I1), as Tengoku's nightly does.
 - Whether the foundation fits C_load is measured next on a built module; if it does not, the foundation is trimmed (fewer, higher-leverage theorems), never the cap.
+
+## Layers (2026-11-21)
+One module holding everything promoted is loaded whole by every session, so the cold import grows with the library and meets C_load (measured: +0.093 s for 5,000 theorems, one module). A promotion is therefore a **stack of
+layers**: a foundation layer holding the constants more than one topic needs, and one layer per topic holding the constants only it needs, each importing the layers it depends on. A session imports the layers
+of the topic it works in and nothing else. The mechanism is two options of `tengai-replay`: `--import MODULE` starts the replay from an earlier layer (found on `LEAN_PATH`) instead of Lean core alone, and `--only NAMES.jsonl`
+adds only the declarations whose first name is listed (an inductive block is one unit, its constructors and recursors come with it); everything else of the export is read and left out. Every layer is
+kernel-checked on its own, so a layer that names a constant whose dependency is in no imported layer is refused. Which constant goes in which layer is a property of the dependency closures: a constant's layer is
+decided by the set of topics whose closure holds it, and a constant's dependencies are used by at least the topics that use it, so the foundation never depends on a topic layer.

@@ -28,6 +28,8 @@ structure Stats where
   added : Nat := 0
   skipped : Nat := 0
   inductives : Nat := 0
+  /-- declarations left out because `--only` did not name them (they belong to another module of a layered promotion) -/
+  filtered : Nat := 0
   deriving ToJson
 
 def fail {α : Type} (msg : String) : IO α := throw (IO.userError s!"replay: {msg}")
@@ -342,11 +344,21 @@ def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Envi
   else
     fail s!"unknown declaration line: {(toString o).take 100}"
 
-partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats) : IO (Environment × Stats) := do
+/-- the first name a declaration line declares: the name of an axiom, definition, theorem, opaque or quotient, or the first type of an inductive block. A block is one unit: its constructors and recursors are
+derived with it, so a replay that keeps or leaves out a block decides on this name alone. -/
+def firstName (t : Tables) (o : Json) : IO (Option Name) := do
+  for k in ["axiom", "def", "thm", "opaque", "quot"] do
+    if has o k then return some (← getName t (← nat (← obj o k) "name"))
+  if has o "inductive" then
+    let types ← jsonArr (← obj o "inductive") "types"
+    if h : 0 < types.size then return some (← getName t (← nat types[0] "name"))
+  return none
+
+partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats) (only : Option (Std.HashSet Name)) : IO (Environment × Stats) := do
   let line ← h.getLine
   if line.isEmpty then return (env, st)
   let line := line.trimAsciiEnd.copy
-  if line.isEmpty then return (← loop h t env st)
+  if line.isEmpty then return (← loop h t env st only)
   let o ← match Json.parse line with
     | .ok j => pure j
     | .error e => fail s!"not JSON: {e}"
@@ -355,16 +367,22 @@ partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats
     match v.getStr? with
     | .ok s => if !s.startsWith "3." then fail s!"export format {s}, this reads 3.x"
     | .error _ => fail "meta without a format version"
-    loop h t env st
+    loop h t env st only
   else if has o "in" then
-    loop h (← readName t o) env st
+    loop h (← readName t o) env st only
   else if has o "il" then
-    loop h (← readLevel t o) env st
+    loop h (← readLevel t o) env st only
   else if has o "ie" then
-    loop h (← readExpr t o) env st
+    loop h (← readExpr t o) env st only
   else
-    let (env, st) ← readDecl t env o st
-    loop h t env st
+    let keep ← match only with
+      | none => pure true
+      | some names => pure ((← firstName t o).all names.contains)
+    if !keep then
+      loop h t env { st with filtered := st.filtered + 1 } only
+    else
+      let (env, st) ← readDecl t env o st
+      loop h t env st only
 
 /-! ## Extension entries: what the kernel does not hold but elaboration needs
 
@@ -455,7 +473,7 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
   pure (c, errors)
 
-def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]"
+def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]"
 
 structure Opts where
   export_ : String := ""
@@ -464,6 +482,10 @@ structure Opts where
   added : Option String := none
   ext : Option String := none
   scopedInst : Bool := false
+  /-- modules the replay starts from besides Lean core: an earlier layer of the same promotion, found on LEAN_PATH -/
+  imports : Array String := #[]
+  /-- only the declarations whose first name is listed (one JSON array of name components a line) are added -/
+  only : Option String := none
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
   | [] => if o.export_.isEmpty || o.module.isEmpty || o.out.isEmpty then .error usage else .ok o
@@ -472,6 +494,8 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--added" :: v :: r => parseArgs { o with added := some v } r
   | "--ext" :: v :: r => parseArgs { o with ext := some v } r
   | "--scoped-instances" :: r => parseArgs { o with scopedInst := true } r
+  | "--import" :: v :: r => parseArgs { o with imports := o.imports.push v } r
+  | "--only" :: v :: r => parseArgs { o with only := some v } r
   | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
 
 end TengaiReplay
@@ -485,7 +509,18 @@ unsafe def main (args : List String) : IO UInt32 := do
   | .ok opts =>
     enableInitializersExecution
     initSearchPath (← findSysroot)
-    let env ← importModules #[{ module := `Init }] {} (loadExts := true)
+    let env ← importModules (#[{ module := `Init }] ++ opts.imports.map fun m => { module := m.toName }) {} (loadExts := true)
+    -- a layer of a promotion adds only the constants it was given; the others are in the layers it imports
+    let only ← match opts.only with
+      | none => pure none
+      | some f => do
+        let mut names : Std.HashSet Name := {}
+        for ln in (← IO.FS.lines f) do
+          if ln.trimAscii.isEmpty then continue
+          match Json.parse ln with
+          | .ok j => names := names.insert (← nameOfJson j)
+          | .error e => fail s!"--only line is not JSON: {e}"
+        pure (some names)
     let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
     -- the binder fixes of `--ext` apply while the declarations are read: the kernel must see the types with the right annotations
     let mut tables : Tables := {}
@@ -507,7 +542,7 @@ unsafe def main (args : List String) : IO UInt32 := do
               fx := fx.push (bn, bi)
             tables := { tables with fixes := tables.fixes.insert n fx }
         | .error e => fail s!"ext line is not JSON: {e}"
-    let (replayed, st) ← loop h tables env {}
+    let (replayed, st) ← loop h tables env {} only
     -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
     if let some f := opts.added then
       let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]
@@ -518,7 +553,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       let rows ← (← IO.FS.lines f).filterMapM fun ln => do
         if ln.trimAscii.isEmpty then return none
         match Json.parse ln with
-        | .ok j => return some j
+        | .ok j =>
+          -- a layer carries the entries of its own constants only: those of another layer are in that layer's module
+          match only, j.getObjVal? "n" with
+          | some _, .ok n => return if replayed.constants.map₂.contains (← nameOfJson n) then some j else none
+          | _, _ => return some j
         | .error e => fail s!"ext line is not JSON: {e}"
       let ((c, errs), cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
       for e in errs do IO.eprintln s!"ext: {e}"

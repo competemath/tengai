@@ -358,7 +358,7 @@ partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats
   let line ← h.getLine
   if line.isEmpty then return (env, st)
   let line := line.trimAsciiEnd.copy
-  if line.isEmpty then return (← loop h t env st)
+  if line.isEmpty then return (← loop h t env st only)
   let o ← match Json.parse line with
     | .ok j => pure j
     | .error e => fail s!"not JSON: {e}"

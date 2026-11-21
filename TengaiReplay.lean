@@ -23,6 +23,8 @@ structure Tables where
   exprs : Array Expr := #[]
   /-- binder names and annotations to restore on the leading telescope of a constant's type (from `--ext`) -/
   fixes : Std.HashMap Name (Array (Name × BinderInfo)) := {}
+  /-- `--stub-refused`: a definition, opaque constant or theorem the kernel refuses is added as an axiom of its type, and counted (`Stats.refused`), instead of stopping the replay -/
+  stubRefused : Bool := false
 
 structure Stats where
   added : Nat := 0
@@ -30,6 +32,8 @@ structure Stats where
   inductives : Nat := 0
   /-- declarations left out because `--only` did not name them (they belong to another module of a layered promotion) -/
   filtered : Nat := 0
+  /-- the declarations `--stub-refused` added as axioms because the kernel refused them (a definition whose value needs a proof that a statements export left out) -/
+  refused : Array String := #[]
   deriving ToJson
 
 def fail {α : Type} (msg : String) : IO α := throw (IO.userError s!"replay: {msg}")
@@ -250,6 +254,15 @@ def addDecl (env : Environment) (d : Declaration) : IO Environment :=
   | .ok e => pure (d.getNames.foldl registerPrefixes e)
   | .error ex => do fail s!"the kernel refused a declaration: {← (ex.toMessageData {}).toString}"
 
+/-- `addDecl`; with `--stub-refused` a declaration the kernel refuses is added as an axiom of its type instead (and counted). The type is what a search needs of a definition; what is lost is its computation. -/
+def addOrStub (t : Tables) (env : Environment) (st : Stats) (cv : ConstantVal) (isUnsafe : Bool) (d : Declaration) : IO (Environment × Stats) := do
+  try
+    pure (← addDecl env d, st)
+  catch e =>
+    if !t.stubRefused then throw e
+    let env ← addDecl env (Declaration.axiomDecl { toConstantVal := cv, isUnsafe := isUnsafe })
+    pure (env, { st with refused := st.refused.push cv.name.toString })
+
 def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO (Environment × Stats) := do
   let types ← jsonArr v "types"
   let ctors ← jsonArr v "ctors"
@@ -314,7 +327,7 @@ def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Envi
       | "partial" => pure DefinitionSafety.partial
       | s => fail s!"definition safety {s}"
     let all ← allNames t v
-    let env ← addDecl env (Declaration.defnDecl { toConstantVal := cv, value := value, hints := hints, safety := safety, all := all })
+    let (env, st) ← addOrStub t env st cv (safety == DefinitionSafety.unsafe) (Declaration.defnDecl { toConstantVal := cv, value := value, hints := hints, safety := safety, all := all })
     pure (env, { st with added := st.added + 1 })
   else if has o "thm" then
     let v ← obj o "thm"
@@ -322,7 +335,7 @@ def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Envi
     if (← alreadyThere env cv.name cv.type) then return (env, { st with skipped := st.skipped + 1 })
     let value ← getExpr t (← nat v "value")
     let all ← allNames t v
-    let env ← addDecl env (Declaration.thmDecl { toConstantVal := cv, value := value, all := all })
+    let (env, st) ← addOrStub t env st cv false (Declaration.thmDecl { toConstantVal := cv, value := value, all := all })
     pure (env, { st with added := st.added + 1 })
   else if has o "opaque" then
     let v ← obj o "opaque"
@@ -331,7 +344,7 @@ def readDecl (t : Tables) (env : Environment) (o : Json) (st : Stats) : IO (Envi
     let value ← getExpr t (← nat v "value")
     let u ← bool v "isUnsafe"
     let all ← allNames t v
-    let env ← addDecl env (Declaration.opaqueDecl { toConstantVal := cv, value := value, isUnsafe := u, all := all })
+    let (env, st) ← addOrStub t env st cv u (Declaration.opaqueDecl { toConstantVal := cv, value := value, isUnsafe := u, all := all })
     pure (env, { st with added := st.added + 1 })
   else if has o "quot" then
     let v ← obj o "quot"
@@ -577,7 +590,7 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
   pure (c, errors)
 
-def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]\n       tengai-replay (EXPORT.ndjson | --tables TABLES) --added-only ADDED.jsonl"
+def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]] [--stub-refused]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]\n       tengai-replay (EXPORT.ndjson | --tables TABLES) --added-only ADDED.jsonl"
 
 structure Opts where
   export_ : String := ""
@@ -595,6 +608,8 @@ structure Opts where
   tables : Option String := none
   /-- write the names a replay would add (`--added` writes the ones it did add) without replaying: from the export, or from `--tables` -/
   addedOnly : Option String := none
+  /-- a declaration the kernel refuses is added as an axiom of its type and counted, instead of stopping the replay: for the replay of a statements export (`lean4export --statements`), where a definition can need a proof that was left out -/
+  stubRefused : Bool := false
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
   | [] =>
@@ -622,6 +637,7 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--save-tables" :: v :: r => parseArgs { o with saveTables := some v } r
   | "--tables" :: v :: r => parseArgs { o with tables := some v } r
   | "--added-only" :: v :: r => parseArgs { o with addedOnly := some v } r
+  | "--stub-refused" :: r => parseArgs { o with stubRefused := true } r
   | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
 
 /-- the lines of a JSON-lines file, parsed (blank lines skipped); `what` names the file in an error -/
@@ -735,7 +751,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     match opts.tables with
     | some file =>
       let (t, decls) ← loadTables file
-      replayModule opts rows fun env only => replayDecls { t with fixes } env decls only
+      replayModule opts rows fun env only => replayDecls { t with fixes, stubRefused := opts.stubRefused } env decls only
     | none =>
       let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
-      replayModule opts rows fun env only => loop h { fixes } env {} only
+      replayModule opts rows fun env only => loop h { fixes, stubRefused := opts.stubRefused } env {} only

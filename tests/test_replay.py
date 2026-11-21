@@ -347,8 +347,8 @@ class Replay(unittest.TestCase):
         self.assertEqual(self.replay(self.export, b).returncode, 0)
         self.assertEqual((a / "TengaiData" / "Fx.olean").read_bytes(), (b / "TengaiData" / "Fx.olean").read_bytes())
 
-    def test_a_wrong_proof_is_refused_by_the_kernel(self):
-        # point a theorem's value at its own type: the kernel must say the value does not have the type
+    def corrupted_export(self, name):
+        """the fixture's export with the value of the theorem Fx.add_swap pointed at its own type: the kernel must say the value does not have the type"""
         lines = self.export.read_text(encoding="utf-8").splitlines()
         bad = []
         done = False
@@ -366,12 +366,33 @@ class Replay(unittest.TestCase):
                 done = True
             bad.append(json.dumps(o, separators=(",", ":")))
         self.assertTrue(done)
-        corrupted = self.dir / "bad.ndjson"
+        corrupted = self.dir / name
         corrupted.write_text("\n".join(bad) + "\n", encoding="utf-8")
+        return corrupted
+
+    def test_a_wrong_proof_is_refused_by_the_kernel(self):
+        corrupted = self.corrupted_export("bad.ndjson")
         r = self.replay(corrupted, self.dir / "badout")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("kernel", r.stderr + r.stdout)
         self.assertFalse((self.dir / "badout" / "TengaiData" / "Fx.olean").exists())
+
+    def test_with_stub_refused_a_declaration_the_kernel_refuses_becomes_an_axiom_of_its_type_and_is_counted(self):
+        corrupted = self.corrupted_export("bad-stub.ndjson")
+        out = self.dir / "stubout"
+        r = self.replay(corrupted, out, "--stub-refused")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        stats = json.loads(r.stdout.strip().splitlines()[-1])["replay"]
+        self.assertEqual(stats["refused"], ["Fx.add_swap"])
+        self.assertTrue((out / "TengaiData" / "Fx.olean").exists())
+        c = self.check(out, "stub.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        # the statement is there, and it rests on itself: an axiom now
+        self.assertIn("'Fx.add_swap' depends on axioms: [Fx.add_swap]", c.stdout)
+        # an uncorrupted export refuses nothing, with the option or without it
+        ok = self.replay(self.export, self.dir / "stubok", "--stub-refused")
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertEqual(json.loads(ok.stdout.strip().splitlines()[-1])["replay"]["refused"], [])
 
 
 if __name__ == "__main__":

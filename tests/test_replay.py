@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -246,6 +247,67 @@ class Replay(unittest.TestCase):
         # the replay of a layer is itself kernel-checked: a layer given a constant whose dependency is in no imported layer is refused
         broken = run(["lake", "exe", "tengai-replay", str(self.export), "--module", "TengaiData.Bad", "--out", str(out), "--only", str(self.dir / "a.names")], ROOT, env=env)
         self.assertNotEqual(broken.returncode, 0, broken.stdout)  # Fx.left_use without Fx.shared: unknown constant
+
+    def test_a_parsed_snapshot_of_the_export_gives_the_same_modules_and_layers_without_parsing_it_again(self):
+        # `--save-tables` parses the export once and writes the result as a file; `--tables` replays from it. A layer of a promotion is then a replay of its own declarations, not a reading of the whole export.
+        tables = self.dir / "tables.olean"
+        saved = self.replay_tables_save(tables)
+        self.assertEqual(saved["declarations"] > 1000 and saved["exprs"] > 100_000, True, saved)
+        ext = self.write_rows(self.extinfo(self.export, "tb"), "tb-ext.jsonl")  # the binder fixes and the extension entries apply to a replay from the file as to one from the export
+        from_export, from_tables = self.dir / "tb-export", self.dir / "tb-tables"
+        a = self.replay(self.export, from_export, "--ext", str(ext))
+        b = run(["lake", "exe", "tengai-replay", "--tables", str(tables), "--module", "TengaiData.Fx", "--out", str(from_tables), "--ext", str(ext)], ROOT)
+        self.assertEqual((a.returncode, b.returncode), (0, 0), a.stdout + a.stderr + b.stdout + b.stderr)
+        self.assertEqual(json.loads(b.stdout.strip().splitlines()[-1]), json.loads(a.stdout.strip().splitlines()[-1]))  # the same counts, the same extension entries
+        rel = Path("TengaiData") / "Fx.olean"
+        self.assertEqual((from_tables / rel).read_bytes(), (from_export / rel).read_bytes())
+        c = self.check(from_tables, "check_ext.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+
+        # layers: each is the module a replay from the export writes, byte for byte, and a layer that adds one constant takes a fraction of the time
+        for stem, names in (("tf", ["Fx.shared"]), ("ta", ["Fx.left_use"])):
+            (self.dir / f"{stem}.names").write_text("".join(json.dumps(n.split(".")) + "\n" for n in names))
+        lean_path = run(["lake", "env", "printenv", "LEAN_PATH"], ROOT).stdout.strip()
+        times = {}
+        for how, out in (("export", self.dir / "tl-export"), ("tables", self.dir / "tl-tables")):
+            env = {**os.environ, "LEAN_PATH": f"{out}:{lean_path}"}
+            for module, stem, imports in (("TengaiData.F", "tf", []), ("TengaiData.A", "ta", ["TengaiData.F"])):
+                source = [str(self.export)] if how == "export" else ["--tables", str(tables)]
+                cmd = ["lake", "exe", "tengai-replay", *source, "--module", module, "--out", str(out), "--only", str(self.dir / f"{stem}.names")]
+                for m in imports:
+                    cmd += ["--import", m]
+                started = time.perf_counter()
+                r = run(cmd, ROOT, env=env)
+                times[how, module] = time.perf_counter() - started
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for module in ("F", "A"):
+            rel = Path("TengaiData") / f"{module}.olean"
+            self.assertEqual((self.dir / "tl-tables" / rel).read_bytes(), (self.dir / "tl-export" / rel).read_bytes(), module)
+        self.assertLess(times["tables", "TengaiData.A"], times["export", "TengaiData.A"] / 3, times)
+
+    def replay_tables_save(self, path):
+        r = run(["lake", "exe", "tengai-replay", str(self.export), "--save-tables", str(path)], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout.strip().splitlines()[-1])["tables"]
+
+    def test_a_table_file_that_is_not_one_and_options_that_do_not_go_together_are_refused(self):
+        junk = self.dir / "junk.olean"
+        junk.write_bytes(b"not an olean file")
+        r = run(["lake", "exe", "tengai-replay", "--tables", str(junk), "--module", "TengaiData.X", "--out", str(self.dir / "junk-out")], ROOT)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        # a module's olean is not a table file either: it has no tables in it
+        out = self.dir / "mod-out"
+        self.assertEqual(self.replay(self.export, out).returncode, 0)
+        r = run(["lake", "exe", "tengai-replay", "--tables", str(out / "TengaiData" / "Fx.olean"), "--module", "TengaiData.X", "--out", str(self.dir / "mod-out2")], ROOT)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("not a table file", r.stderr)
+        for args in (
+            [str(self.export), "--save-tables", str(self.dir / "t1"), "--module", "TengaiData.X"],  # saving takes the export and nothing else
+            [str(self.export), "--tables", str(self.dir / "t2"), "--module", "TengaiData.X", "--out", str(self.dir / "o")],  # the tables replace the export
+            ["--tables", str(self.dir / "t3")],  # a replay needs its module and its output
+        ):
+            r = run(["lake", "exe", "tengai-replay", *args], ROOT)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

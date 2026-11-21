@@ -20,7 +20,7 @@ Everything arrives as a promotion from Tenro, through the same gates.
 Built, and checked in CI on every change:
 
 - **`tengai-replay`**: content from a Tengoku export becomes a built `.olean` by kernel replay (every declaration goes through `addDecl`, so a wrong proof is refused whatever produced it), in layers
-  (`--import`, `--only`: a foundation and a layer per topic), with what elaboration needs besides the kernel's constants (`tengai-extinfo` and `--ext`: reducibility, classes, instances, projection and structure
+  (`--import`, `--only`: a foundation and a layer per topic; `--save-tables` and `--tables`: the export is parsed once and every layer replays from the parsed file), with what elaboration needs besides the kernel's constants (`tengai-extinfo` and `--ext`: reducibility, classes, instances, projection and structure
   information, the binder names and annotations of the source). [ADR-0005](docs/adr/0005-promotion-by-replay.md) says what is carried and what is not. `tengai-typeinfo` reads the shape of a statement in any environment.
 - **The canonical form** (`conventions.toml`): `tengai-canon` checks the elaborated statements of the library against it, `tengai-normalise` produces it (idempotent).
 - **The layout and release rules**: cones, `data/` and `tawatur/` (`tools/check_layout.py`, no import of Tengoku, ever) and the release guard (`tools/release_guard.py`).

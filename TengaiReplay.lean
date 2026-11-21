@@ -384,6 +384,66 @@ partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats
       let (env, st) ← readDecl t env o st
       loop h t env st only
 
+/-- The pass of `loop` without the replay: the declaration lines are kept (each with the first name it declares) and everything else is read as `loop` reads it. A promotion in layers reads the export
+once with this and replays each layer from what it kept (`replayDecls`), where one `tengai-replay` per layer reads and parses the whole export again for every layer. -/
+partial def loadExport (h : IO.FS.Handle) (t : Tables) (decls : Array (Option Name × Json)) : IO (Tables × Array (Option Name × Json)) := do
+  let line ← h.getLine
+  if line.isEmpty then return (t, decls)
+  let line := line.trimAsciiEnd.copy
+  if line.isEmpty then return (← loadExport h t decls)
+  let o ← match Json.parse line with
+    | .ok j => pure j
+    | .error e => fail s!"not JSON: {e}"
+  if has o "meta" then
+    let v ← obj (← obj (← obj o "meta") "format") "version"
+    match v.getStr? with
+    | .ok s => if !s.startsWith "3." then fail s!"export format {s}, this reads 3.x"
+    | .error _ => fail "meta without a format version"
+    loadExport h t decls
+  else if has o "in" then
+    loadExport h (← readName t o) decls
+  else if has o "il" then
+    loadExport h (← readLevel t o) decls
+  else if has o "ie" then
+    loadExport h (← readExpr t o) decls
+  else
+    loadExport h t (decls.push (← firstName t o, o))
+
+/-- The declarations `loop` would replay, from what `loadExport` kept: the ones `only` names (all of them without `only`) go through the kernel, the others are counted as filtered. -/
+def replayDecls (t : Tables) (env : Environment) (decls : Array (Option Name × Json)) (only : Option (Std.HashSet Name)) : IO (Environment × Stats) := do
+  let mut env := env
+  let mut st : Stats := {}
+  for (first, o) in decls do
+    let keep := match only with
+      | none => true
+      | some names => first.all names.contains
+    if keep then
+      let (e, s) ← readDecl t env o st
+      env := e
+      st := s
+    else
+      st := { st with filtered := st.filtered + 1 }
+  pure (env, st)
+
+/-- The parsed export as a file: what `loadExport` returns, written with `saveModuleData` (the image of an `.olean`) and read back mapped by `loadTables`, so that a layer's process does not parse a line of JSON.
+Nothing in the file is a module; it borrows the format, which keeps the sharing of the expression DAG that a copy line by line would lose. The names go where a module keeps extra constant names, the rest are
+entries under names of their own. -/
+unsafe def saveTables (path : System.FilePath) (t : Tables) (decls : Array (Option Name × Json)) : IO Unit := do
+  let data : ModuleData := {
+    isModule := false, imports := #[], constNames := #[], constants := #[], extraConstNames := t.names,
+    entries := #[(`levels, unsafeCast t.levels), (`exprs, unsafeCast t.exprs), (`decls, unsafeCast decls)] }
+  saveModuleData path `TengaiTables data
+
+/-- Read a table file back (`saveTables`): the arrays point into the mapped file, which is kept for the life of the process. A file that is not one is refused. -/
+unsafe def loadTables (path : System.FilePath) : IO (Tables × Array (Option Name × Json)) := do
+  let (data, _region) ← readModuleData path
+  let entry (n : Name) : IO (Array EnvExtensionEntry) :=
+    match data.entries.find? (·.1 == n) with
+    | some (_, es) => pure es
+    | none => fail s!"{path} is not a table file of tengai-replay (it has no {n})"
+  if data.extraConstNames.isEmpty || data.extraConstNames[0]! != Name.anonymous then fail s!"{path} is not a table file of tengai-replay (its names do not start with the anonymous name)"
+  pure ({ names := data.extraConstNames, levels := unsafeCast (← entry `levels), exprs := unsafeCast (← entry `exprs) }, unsafeCast (← entry `decls))
+
 /-! ## Extension entries: what the kernel does not hold but elaboration needs
 
 A replayed module holds kernel constants and nothing else. `tengai-extinfo` reads, in the environment the constants came from, what Lean keeps about them outside the kernel (reducibility, class and instance
@@ -499,7 +559,7 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
   pure (c, errors)
 
-def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]"
+def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]"
 
 structure Opts where
   export_ : String := ""
@@ -512,9 +572,22 @@ structure Opts where
   imports : Array String := #[]
   /-- only the declarations whose first name is listed (one JSON array of name components a line) are added -/
   only : Option String := none
+  /-- the parsed export as a file (`--save-tables` writes it, `--tables` replays from it instead of from the export): the parse of a large export is most of the time of a small layer -/
+  saveTables : Option String := none
+  tables : Option String := none
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
-  | [] => if o.export_.isEmpty || o.module.isEmpty || o.out.isEmpty then .error usage else .ok o
+  | [] =>
+    if o.saveTables.isSome then
+      if o.export_.isEmpty || o.tables.isSome || !o.module.isEmpty || !o.out.isEmpty || !o.imports.isEmpty || o.only.isSome || o.added.isSome || o.ext.isSome then
+        .error "--save-tables takes the export and nothing else: it parses the export and writes the table file"
+      else .ok o
+    else if o.tables.isSome then
+      if !o.export_.isEmpty then .error "--tables replaces the export: give one of them"
+      else if o.module.isEmpty || o.out.isEmpty then .error usage
+      else .ok o
+    else if o.export_.isEmpty || o.module.isEmpty || o.out.isEmpty then .error usage
+    else .ok o
   | "--module" :: v :: r => parseArgs { o with module := v } r
   | "--out" :: v :: r => parseArgs { o with out := v } r
   | "--added" :: v :: r => parseArgs { o with added := some v } r
@@ -522,7 +595,84 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--scoped-instances" :: r => parseArgs { o with scopedInst := true } r
   | "--import" :: v :: r => parseArgs { o with imports := o.imports.push v } r
   | "--only" :: v :: r => parseArgs { o with only := some v } r
+  | "--save-tables" :: v :: r => parseArgs { o with saveTables := some v } r
+  | "--tables" :: v :: r => parseArgs { o with tables := some v } r
   | x :: r => if o.export_.isEmpty && !x.startsWith "--" then parseArgs { o with export_ := x } r else .error s!"unexpected argument {x}"
+
+/-- the lines of a JSON-lines file, parsed (blank lines skipped); `what` names the file in an error -/
+def readJsonLines (f : String) (what : String) : IO (Array Json) := do
+  let mut rows : Array Json := #[]
+  for ln in (← IO.FS.lines f) do
+    if ln.trimAscii.isEmpty then continue
+    match Json.parse ln with
+    | .ok j => rows := rows.push j
+    | .error e => fail s!"{what} line is not JSON: {e}"
+  pure rows
+
+/-- the names of a `--only` file or of a layer of a plan: one JSON array of name components a line -/
+def readNames (f : String) (what : String) : IO (Std.HashSet Name) := do
+  let mut names : Std.HashSet Name := {}
+  for j in (← readJsonLines f what) do
+    names := names.insert (← nameOfJson j)
+  pure names
+
+/-- the binder names and annotations of `--ext` (its `bi` rows): they apply while the declarations are read, the kernel must see the types with the right annotations -/
+def readFixes (rows : Array Json) : IO (Std.HashMap Name (Array (Name × BinderInfo))) := do
+  let mut fixes : Std.HashMap Name (Array (Name × BinderInfo)) := {}
+  for j in rows do
+    if has j "bi" then
+      let n ← nameOfJson (← obj j "n")
+      let arr ← jsonArr j "bi"
+      let mut fx : Array (Name × BinderInfo) := #[]
+      for b in arr do
+        let pair ← match b.getArr? with
+          | .ok p => pure p
+          | .error e => fail s!"bi: {e}"
+        let bn ← nameOfJson pair[0]!
+        let bi ← binderInfo (← match pair[1]!.getStr? with | .ok s => pure s | .error e => fail s!"bi: {e}")
+        fx := fx.push (bn, bi)
+      fixes := fixes.insert n fx
+  pure fixes
+
+/-- what a replay does once its declarations are in: the extension entries (the rows of `--ext`; for a layer, the rows of the constants it added: those of another layer are in that layer's module),
+then the module is written and the statistics are printed as one JSON line. Shared by the one-module replay and each layer of `--layers`. -/
+def finishModule (replayed : Environment) (st : Stats) (rows : Option (Array Json)) (ownOnly : Bool) (scopedInst : Bool) (module out : String) : IO Unit := do
+  let mut counts : Option ExtCounts := none
+  let mut cur := replayed
+  if let some all := rows then
+    let rows ← all.filterMapM fun j => do
+      if ownOnly then
+        match j.getObjVal? "n" with
+        | .ok n => return if replayed.constants.map₂.contains (← nameOfJson n) then some j else none
+        | .error _ => return some j
+      else
+        return some j
+    let ((c, errs), cst) ← ((applyExt rows scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
+    for e in errs do IO.eprintln s!"ext: {e}"
+    counts := some c
+    cur := cst.env
+  let modName := module.toName
+  let env := cur.setMainModule modName
+  let rel := String.intercalate "/" (modName.components.map toString) ++ ".olean"
+  let path : System.FilePath := (System.FilePath.mk out) / rel
+  if let some p := path.parent then IO.FS.createDirAll p
+  writeModule env path
+  IO.println (Json.mkObj [("replay", toJson st), ("ext", match counts with | some c => toJson c | none => Json.null)]).compress
+
+/-- the replay of one module (with `--import` and `--only` it is one layer of a promotion): `run` replays the declarations into the environment it is given, from the export as it is read or from a table file -/
+def replayModule (opts : Opts) (rows : Option (Array Json)) (run : Environment → Option (Std.HashSet Name) → IO (Environment × Stats)) : IO UInt32 := do
+  let env ← importModules (#[{ module := `Init }] ++ opts.imports.map fun m => { module := m.toName }) {} (loadExts := true)
+  -- a layer of a promotion adds only the constants it was given; the others are in the layers it imports
+  let only ← match opts.only with
+    | none => pure none
+    | some f => pure (some (← readNames f "--only"))
+  let (replayed, st) ← run env only
+  -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
+  if let some f := opts.added then
+    let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]
+    IO.FS.writeFile f (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
+  finishModule replayed st rows only.isSome opts.scopedInst opts.module opts.out
+  return 0
 
 end TengaiReplay
 
@@ -535,65 +685,23 @@ unsafe def main (args : List String) : IO UInt32 := do
   | .ok opts =>
     enableInitializersExecution
     initSearchPath (← findSysroot)
-    let env ← importModules (#[{ module := `Init }] ++ opts.imports.map fun m => { module := m.toName }) {} (loadExts := true)
-    -- a layer of a promotion adds only the constants it was given; the others are in the layers it imports
-    let only ← match opts.only with
+    -- the binder names and annotations of `--ext` apply while the declarations are read: the kernel must see the types with the right annotations
+    let rows ← match opts.ext with
       | none => pure none
-      | some f => do
-        let mut names : Std.HashSet Name := {}
-        for ln in (← IO.FS.lines f) do
-          if ln.trimAscii.isEmpty then continue
-          match Json.parse ln with
-          | .ok j => names := names.insert (← nameOfJson j)
-          | .error e => fail s!"--only line is not JSON: {e}"
-        pure (some names)
-    let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
-    -- the binder fixes of `--ext` apply while the declarations are read: the kernel must see the types with the right annotations
-    let mut tables : Tables := {}
-    if let some f := opts.ext then
-      for ln in (← IO.FS.lines f) do
-        if ln.trimAscii.isEmpty then continue
-        match Json.parse ln with
-        | .ok j =>
-          if has j "bi" then
-            let n ← nameOfJson (← obj j "n")
-            let arr ← jsonArr j "bi"
-            let mut fx : Array (Name × BinderInfo) := #[]
-            for b in arr do
-              let pair ← match b.getArr? with
-                | .ok p => pure p
-                | .error e => fail s!"bi: {e}"
-              let bn ← nameOfJson pair[0]!
-              let bi ← binderInfo (← match pair[1]!.getStr? with | .ok s => pure s | .error e => fail s!"bi: {e}")
-              fx := fx.push (bn, bi)
-            tables := { tables with fixes := tables.fixes.insert n fx }
-        | .error e => fail s!"ext line is not JSON: {e}"
-    let (replayed, st) ← loop h tables env {} only
-    -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
-    if let some f := opts.added then
-      let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]
-      IO.FS.writeFile f (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
-    let mut counts : Option ExtCounts := none
-    let mut cur := replayed
-    if let some f := opts.ext then
-      let rows ← (← IO.FS.lines f).filterMapM fun ln => do
-        if ln.trimAscii.isEmpty then return none
-        match Json.parse ln with
-        | .ok j =>
-          -- a layer carries the entries of its own constants only: those of another layer are in that layer's module
-          match only, j.getObjVal? "n" with
-          | some _, .ok n => return if replayed.constants.map₂.contains (← nameOfJson n) then some j else none
-          | _, _ => return some j
-        | .error e => fail s!"ext line is not JSON: {e}"
-      let ((c, errs), cst) ← ((applyExt rows opts.scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
-      for e in errs do IO.eprintln s!"ext: {e}"
-      counts := some c
-      cur := cst.env
-    let modName := opts.module.toName
-    let env := cur.setMainModule modName
-    let rel := String.intercalate "/" (modName.components.map toString) ++ ".olean"
-    let path : System.FilePath := (System.FilePath.mk opts.out) / rel
-    if let some p := path.parent then IO.FS.createDirAll p
-    writeModule env path
-    IO.println (Json.mkObj [("replay", toJson st), ("ext", match counts with | some c => toJson c | none => Json.null)]).compress
-    return 0
+      | some f => pure (some (← readJsonLines f "ext"))
+    let fixes ← match rows with
+      | none => pure {}
+      | some r => readFixes r
+    if let some file := opts.saveTables then
+      -- parse the export once and keep the result: every layer's process then reads this file instead of the export
+      let (t, decls) ← loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} #[]
+      saveTables file t decls
+      IO.println (Json.mkObj [("tables", Json.mkObj [("names", toJson t.names.size), ("levels", toJson t.levels.size), ("exprs", toJson t.exprs.size), ("declarations", toJson decls.size)])]).compress
+      return 0
+    match opts.tables with
+    | some file =>
+      let (t, decls) ← loadTables file
+      replayModule opts rows fun env only => replayDecls { t with fixes } env decls only
+    | none =>
+      let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
+      replayModule opts rows fun env only => loop h { fixes } env {} only

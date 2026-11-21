@@ -118,26 +118,39 @@ class Replay(unittest.TestCase):
         for n, want in known.items():
             self.assertEqual(got.get(n), want, f"{n}: lean4export wrote {got.get(n)}, Lean core declares {want}; all: {got}")
 
-    def test_typeinfo_reads_the_same_statement_in_both_environments(self):
-        names = self.dir / "names.jsonl"
+    def test_the_binder_names_and_annotations_of_the_source_are_restored(self):
+        """lean4export shares terms equal up to binder names and annotations and keeps the first it saw: the plain replay of `Fx.Sz.n` has {α} and an explicit self, `Fx.add_swap` has `n m`.
+        With the extension file the leading binders are put back before the kernel sees the type, and tengai-typeinfo reads the same telescope in both environments."""
+        names = self.dir / "tnames.jsonl"
         names.write_text(json.dumps(["Fx", "add_swap"]) + "\n" + json.dumps(["Fx", "Sz", "n"]) + "\n", encoding="utf-8")
-        src = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo"), str(names), "Fx"], FIXTURE)
+        typeinfo = str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo")
+        src = run(["lake", "env", typeinfo, str(names), "Fx"], FIXTURE)
         self.assertEqual(src.returncode, 0, src.stderr)
-        out = self.dir / "ti"
-        self.assertEqual(self.replay(self.export, out).returncode, 0)
-        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
-        rep = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo"), str(names), "TengaiData.Fx"], ROOT, env=env)
-        self.assertEqual(rep.returncode, 0, rep.stderr)
-        a = [json.loads(x) for x in src.stdout.splitlines()]
-        b = [json.loads(x) for x in rep.stdout.splitlines()]
+        added, ext = self.dir / "tadded.jsonl", self.dir / "text.jsonl"
+        self.assertEqual(self.replay(self.export, self.dir / "tpass1", "--added", str(added)).returncode, 0)
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "Fx"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        ext.write_text(x.stdout, encoding="utf-8")
+
+        def read(out):
+            env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+            r = run(["lake", "env", typeinfo, str(names), "TengaiData.Fx"], ROOT, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return [json.loads(ln) for ln in r.stdout.splitlines()]
+
+        plain_out, fixed_out = self.dir / "tplain", self.dir / "tfixed"
+        self.assertEqual(self.replay(self.export, plain_out).returncode, 0)
+        r = self.replay(self.export, fixed_out, "--ext", str(ext))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        a = [json.loads(ln) for ln in src.stdout.splitlines()]
+        plain, fixed = read(plain_out), read(fixed_out)
         self.assertEqual(len(a), 2)
-        for x, y in zip(a, b):
-            self.assertNotIn("missing", x)
-            # the replay keeps every binder, annotation and head constant; the node count may be smaller by the expression metadata it drops.
-            # Binder NAMES are not compared: lean4export shares alpha-equivalent terms and keeps the first it saw (Fx.add_swap comes back with Nat.add_comm's `n m`, not its own `a b`)
-            shape = lambda r: [(b["info"], b["head"]) for b in r["binders"]]  # noqa: E731
-            self.assertEqual(shape(x), shape(y), x["n"])
-            self.assertEqual(x["size"] - x["mdata"], y["size"] - y["mdata"], x["n"])
+        # the control: without the file the telescope of the class projection is not the source's
+        self.assertNotEqual([b["info"] for b in plain[1]["binders"]], [b["info"] for b in a[1]["binders"]], plain[1])
+        for x_, y_ in zip(a, fixed):
+            self.assertNotIn("missing", y_)
+            self.assertEqual(x_["binders"], y_["binders"], x_["n"])  # names, annotations and heads
+            self.assertEqual(x_["size"] - x_["mdata"], y_["size"] - y_["mdata"], x_["n"])
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

@@ -21,6 +21,8 @@ structure Tables where
   names : Array Name := #[Name.anonymous]
   levels : Array Level := #[Level.zero]
   exprs : Array Expr := #[]
+  /-- binder names and annotations to restore on the leading telescope of a constant's type (from `--ext`) -/
+  fixes : Std.HashMap Name (Array (Name × BinderInfo)) := {}
 
 structure Stats where
   added : Nat := 0
@@ -84,6 +86,20 @@ def binderInfo (s : String) : IO BinderInfo :=
   | "strictImplicit" => pure BinderInfo.strictImplicit
   | "instImplicit" => pure BinderInfo.instImplicit
   | _ => fail s!"binder info {s}"
+
+/-- restore the names and annotations of the leading binders (lean4export shares terms that differ only there, and keeps the first it saw) -/
+def fixTelescope (e : Expr) (fx : Array (Name × BinderInfo)) (i : Nat := 0) : Expr :=
+  match e with
+  | .forallE _ ty b bi =>
+    match fx[i]? with
+    | some (n, bi') => .forallE n ty (fixTelescope b fx (i + 1)) bi'
+    | none => e
+  | _ => e
+
+def fixedType (t : Tables) (n : Name) (e : Expr) : Expr :=
+  match t.fixes[n]? with
+  | some fx => fixTelescope e fx
+  | none => e
 
 def readName (t : Tables) (o : Json) : IO Tables := do
   let idx ← nat o "in"
@@ -171,7 +187,7 @@ def constantVal (t : Tables) (v : Json) : IO ConstantVal := do
   let n ← getName t (← nat v "name")
   let ps ← levelParams t v
   let ty ← getExpr t (← nat v "type")
-  pure { name := n, levelParams := ps, type := ty }
+  pure { name := n, levelParams := ps, type := fixedType t n ty }
 
 /-- the term as the kernel reads it, for comparing a constant with one Lean core already holds: without expression metadata (`@& Nat` is `mdata` around `Nat`; the export drops it)
 and without the `have`/`let` flag (Lean core marks a `have` as non-dependent, the pinned exporter writes `false`; the kernel treats both alike). Only comparisons use this; replayed terms are as exported. -/
@@ -238,7 +254,8 @@ def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO 
   let recs ← jsonArr v "recs"
   let mut ctorTable : Array (Name × Expr) := #[]
   for c in ctors do
-    ctorTable := ctorTable.push ((← getName t (← nat c "name")), (← getExpr t (← nat c "type")))
+    let cn ← getName t (← nat c "name")
+    ctorTable := ctorTable.push (cn, fixedType t cn (← getExpr t (← nat c "type")))
   let first := types[0]!
   let firstName ← getName t (← nat first "name")
   let firstType ← getExpr t (← nat first "type")
@@ -250,7 +267,7 @@ def readInductive (t : Tables) (env : Environment) (v : Json) (st : Stats) : IO 
   let mut its : List InductiveType := []
   for ty in types do
     let n ← getName t (← nat ty "name")
-    let tp ← getExpr t (← nat ty "type")
+    let tp := fixedType t n (← getExpr t (← nat ty "type"))
     let cn ← (← natArr ty "ctors").toList.mapM (getName t)
     let mut cs : List Constructor := []
     for c in cn do
@@ -470,7 +487,27 @@ unsafe def main (args : List String) : IO UInt32 := do
     initSearchPath (← findSysroot)
     let env ← importModules #[{ module := `Init }] {} (loadExts := true)
     let h ← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read
-    let (replayed, st) ← loop h {} env {}
+    -- the binder fixes of `--ext` apply while the declarations are read: the kernel must see the types with the right annotations
+    let mut tables : Tables := {}
+    if let some f := opts.ext then
+      for ln in (← IO.FS.lines f) do
+        if ln.trimAscii.isEmpty then continue
+        match Json.parse ln with
+        | .ok j =>
+          if has j "bi" then
+            let n ← nameOfJson (← obj j "n")
+            let arr ← jsonArr j "bi"
+            let mut fx : Array (Name × BinderInfo) := #[]
+            for b in arr do
+              let pair ← match b.getArr? with
+                | .ok p => pure p
+                | .error e => fail s!"bi: {e}"
+              let bn ← nameOfJson pair[0]!
+              let bi ← binderInfo (← match pair[1]!.getStr? with | .ok s => pure s | .error e => fail s!"bi: {e}")
+              fx := fx.push (bn, bi)
+            tables := { tables with fixes := tables.fixes.insert n fx }
+        | .error e => fail s!"ext line is not JSON: {e}"
+    let (replayed, st) ← loop h tables env {}
     -- the names this replay added (not the ones Lean core already held): the input of `tengai-extinfo`
     if let some f := opts.added then
       let names := replayed.constants.foldStage2 (fun acc n _ => acc.push n) #[]

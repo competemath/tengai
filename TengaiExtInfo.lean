@@ -11,6 +11,7 @@ and prints one JSON line for every one of them that has something to carry:
   {"n": [...], "proj": {"ctor": [...], "np": 2, "i": 0, "cls": true}}      a projection function
   {"n": [...], "class": true}                           a class
   {"n": [...], "inst": {"prio": 1000, "kind": "global"}}   an instance (local ones are not carried)
+  {"n": [...], "bi": [[[...], "instImplicit"], ...]}     the names and annotations of the leading binders of its type (what lean4export may have replaced by those of an equal term)
 
 `tengai-replay --ext` puts them back. Names travel as arrays of components, never as strings: a numbered or private name does not survive `String.toName`. It imports Lean; no library imports it.
 -/
@@ -30,6 +31,19 @@ def nameToJson (n : Name) : Json :=
     | .str _ s => Json.str s
     | .num _ k => Json.num (JsonNumber.fromNat k)
     | _ => Json.null)
+
+def infoString : BinderInfo → String
+  | .default => "default"
+  | .implicit => "implicit"
+  | .strictImplicit => "strictImplicit"
+  | .instImplicit => "instImplicit"
+
+/-- the names and annotations of the leading binders of a type (at most 64): lean4export shares terms that are equal up to binder names and annotations, so a replayed constant can carry another term's -/
+partial def leadingBinders (e : Expr) (acc : Array Json := #[]) : Array Json :=
+  if acc.size ≥ 64 then acc else
+  match e with
+  | .forallE n _ b i => leadingBinders b (acc.push (Json.arr #[nameToJson n, Json.str (infoString i)]))
+  | _ => acc
 
 def statusString : ReducibilityStatus → String
   | .reducible => "reducible"
@@ -68,6 +82,9 @@ unsafe def main (args : List String) : IO UInt32 := do
         match e.attrKind with
         | .local => pure ()
         | k => fields := fields ++ [("inst", Json.mkObj [("prio", toJson e.priority), ("kind", Json.str (if k matches .scoped then "scoped" else "global"))])]
+      if let some ci := env.find? n then
+        let bs := leadingBinders ci.type
+        if bs.size > 0 then fields := fields ++ [("bi", Json.arr bs)]
       if fields.length > 1 then
         IO.println (Json.mkObj fields).compress
         emitted := emitted + 1

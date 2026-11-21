@@ -309,6 +309,38 @@ class Replay(unittest.TestCase):
             r = run(["lake", "exe", "tengai-replay", *args], ROOT)
             self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
 
+    def test_the_names_a_replay_would_add_are_found_without_replaying_it(self):
+        # `--added-only` lists them from the export, or from a table file, without the kernel: the same set `--added` writes after a replay (what `tengai-extinfo` is asked about), in a fraction of the time
+        def names(path):
+            return {json.dumps(json.loads(ln)) for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()}
+
+        added = self.dir / "ao-added.jsonl"
+        self.assertEqual(self.replay(self.export, self.dir / "ao-out", "--added", str(added)).returncode, 0)
+        reference = names(added)
+        self.assertGreater(len(reference), 50)
+        from_export = self.dir / "ao-export.jsonl"
+        r = run(["lake", "exe", "tengai-replay", str(self.export), "--added-only", str(from_export)], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"added_only": len(reference)})
+        self.assertEqual(names(from_export), reference)
+        tables = self.dir / "ao-tables.olean"
+        self.replay_tables_save(tables)
+        from_tables = self.dir / "ao-from-tables.jsonl"
+        started = time.perf_counter()
+        r = run(["lake", "exe", "tengai-replay", "--tables", str(tables), "--added-only", str(from_tables)], ROOT)
+        quick = time.perf_counter() - started
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(names(from_tables), reference)
+        self.assertLess(quick, 10, quick)  # the replay of the same export takes more than that on the fixture; reading the mapped file does not
+        # options that do not go together are refused
+        for args in (
+            [str(self.export), "--added-only", str(self.dir / "x"), "--module", "TengaiData.X"],
+            [str(self.export), "--tables", str(tables), "--added-only", str(self.dir / "x")],
+            ["--added-only", str(self.dir / "x")],
+        ):
+            r = run(["lake", "exe", "tengai-replay", *args], ROOT)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"
         self.assertEqual(self.replay(self.export, a).returncode, 0)

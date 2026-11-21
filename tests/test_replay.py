@@ -76,7 +76,7 @@ class Replay(unittest.TestCase):
         ext.write_text(x.stdout, encoding="utf-8")
         rows = [json.loads(ln) for ln in x.stdout.splitlines()]
         kinds = {k for r in rows for k in r if k != "n"}
-        self.assertEqual(kinds, {"red", "proj", "class", "inst"})
+        self.assertEqual(kinds, {"red", "proj", "class", "inst", "bi"})
         r = self.replay(self.export, withext, "--ext", str(ext))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]

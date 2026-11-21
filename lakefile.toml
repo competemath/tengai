@@ -37,3 +37,9 @@ supportInterpreter = true
 name = "tengai-extinfo"
 root = "TengaiExtInfo"
 supportInterpreter = true
+
+# The shape of the type of a declaration (size, metadata nodes, leading binders) in whatever environment imports it: where two environments' readings of one statement differ. It imports Lean.
+[[lean_exe]]
+name = "tengai-typeinfo"
+root = "TengaiTypeInfo"
+supportInterpreter = true

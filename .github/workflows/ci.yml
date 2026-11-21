@@ -88,7 +88,7 @@ jobs:
           cd "$RUNNER_TEMP/lean4export" && lake build 2>&1 | tail -3
       - name: tengai-replay on a fixture export (kernel-checked, used by name, deterministic, a wrong proof refused)
         run: |
-          lake build tengai-replay tengai-extinfo 2>&1 | tail -30
+          lake build tengai-replay tengai-extinfo tengai-typeinfo 2>&1 | tail -30
           LEAN4EXPORT="$RUNNER_TEMP/lean4export/.lake/build/bin/lean4export" python3 tests/test_replay.py -v
 
   layout:

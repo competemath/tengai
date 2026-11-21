@@ -76,7 +76,7 @@ class Replay(unittest.TestCase):
         ext.write_text(x.stdout, encoding="utf-8")
         rows = [json.loads(ln) for ln in x.stdout.splitlines()]
         kinds = {k for r in rows for k in r if k != "n"}
-        self.assertEqual(kinds, {"red", "proj", "class", "inst"})
+        self.assertEqual(kinds, {"red", "proj", "class", "inst", "bi"})
         r = self.replay(self.export, withext, "--ext", str(ext))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
@@ -117,6 +117,40 @@ class Replay(unittest.TestCase):
         known = {"Inhabited.default": ["implicit", "instImplicit"], "Nat.add_comm": ["default", "default"], "Add.add": ["implicit", "instImplicit", "default", "default"]}
         for n, want in known.items():
             self.assertEqual(got.get(n), want, f"{n}: lean4export wrote {got.get(n)}, Lean core declares {want}; all: {got}")
+
+    def test_the_binder_names_and_annotations_of_the_source_are_restored(self):
+        """lean4export shares terms equal up to binder names and annotations and keeps the first it saw: the plain replay of `Fx.Sz.n` has {α} and an explicit self, `Fx.add_swap` has `n m`.
+        With the extension file the leading binders are put back before the kernel sees the type, and tengai-typeinfo reads the same telescope in both environments."""
+        names = self.dir / "tnames.jsonl"
+        names.write_text(json.dumps(["Fx", "add_swap"]) + "\n" + json.dumps(["Fx", "Sz", "n"]) + "\n", encoding="utf-8")
+        typeinfo = str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo")
+        src = run(["lake", "env", typeinfo, str(names), "Fx"], FIXTURE)
+        self.assertEqual(src.returncode, 0, src.stderr)
+        added, ext = self.dir / "tadded.jsonl", self.dir / "text.jsonl"
+        self.assertEqual(self.replay(self.export, self.dir / "tpass1", "--added", str(added)).returncode, 0)
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "Fx"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        ext.write_text(x.stdout, encoding="utf-8")
+
+        def read(out):
+            env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+            r = run(["lake", "env", typeinfo, str(names), "TengaiData.Fx"], ROOT, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return [json.loads(ln) for ln in r.stdout.splitlines()]
+
+        plain_out, fixed_out = self.dir / "tplain", self.dir / "tfixed"
+        self.assertEqual(self.replay(self.export, plain_out).returncode, 0)
+        r = self.replay(self.export, fixed_out, "--ext", str(ext))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        a = [json.loads(ln) for ln in src.stdout.splitlines()]
+        plain, fixed = read(plain_out), read(fixed_out)
+        self.assertEqual(len(a), 2)
+        # the control: without the file the telescope of the class projection is not the source's
+        self.assertNotEqual([b["info"] for b in plain[1]["binders"]], [b["info"] for b in a[1]["binders"]], plain[1])
+        for x_, y_ in zip(a, fixed):
+            self.assertNotIn("missing", y_)
+            self.assertEqual(x_["binders"], y_["binders"], x_["n"])  # names, annotations and heads
+            self.assertEqual(x_["size"] - x_["mdata"], y_["size"] - y_["mdata"], x_["n"])
 
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"

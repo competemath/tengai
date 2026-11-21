@@ -118,6 +118,25 @@ class Replay(unittest.TestCase):
         for n, want in known.items():
             self.assertEqual(got.get(n), want, f"{n}: lean4export wrote {got.get(n)}, Lean core declares {want}; all: {got}")
 
+    def test_typeinfo_reads_the_same_statement_in_both_environments(self):
+        names = self.dir / "names.jsonl"
+        names.write_text(json.dumps(["Fx", "add_swap"]) + "\n" + json.dumps(["Fx", "Sz", "n"]) + "\n", encoding="utf-8")
+        src = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo"), str(names), "Fx"], FIXTURE)
+        self.assertEqual(src.returncode, 0, src.stderr)
+        out = self.dir / "ti"
+        self.assertEqual(self.replay(self.export, out).returncode, 0)
+        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+        rep = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo"), str(names), "TengaiData.Fx"], ROOT, env=env)
+        self.assertEqual(rep.returncode, 0, rep.stderr)
+        a = [json.loads(x) for x in src.stdout.splitlines()]
+        b = [json.loads(x) for x in rep.stdout.splitlines()]
+        self.assertEqual(len(a), 2)
+        for x, y in zip(a, b):
+            self.assertNotIn("missing", x)
+            # the replay keeps every binder and annotation; the node count may be smaller by the expression metadata it drops
+            self.assertEqual(x["binders"], y["binders"], x["n"])
+            self.assertEqual(x["size"] - x["mdata"], y["size"] - y["mdata"], x["n"])
+
     def test_the_replay_is_deterministic(self):
         a, b = self.dir / "a", self.dir / "b"
         self.assertEqual(self.replay(self.export, a).returncode, 0)

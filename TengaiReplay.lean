@@ -90,7 +90,7 @@ def binderInfo (s : String) : IO BinderInfo :=
 /-- restore the names and annotations of the leading binders (lean4export shares terms that differ only there, and keeps the first it saw) -/
 def fixTelescope (e : Expr) (fx : Array (Name × BinderInfo)) (i : Nat := 0) : Expr :=
   match e with
-  | .forallE _ ty b bi =>
+  | .forallE _ ty b _ =>
     match fx[i]? with
     | some (n, bi') => .forallE n ty (fixTelescope b fx (i + 1)) bi'
     | none => e

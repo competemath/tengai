@@ -54,4 +54,16 @@ theorem left_use (n : Nat) : shared n = n + n := rfl
 
 theorem right_use (n : Nat) : shared (shared n) = shared n + shared n := rfl
 
+-- the kinds of term that the parsed tables keep as a record and a layer builds only when it reaches it: a string literal (with a quote, a newline and a non-ASCII character), a natural literal that
+-- does not fit a machine word, a small one, and a `let`; the replay from the tables must write the module that the replay from the export writes, byte for byte
+def greeting : String := "héllo \"quoted\"\n"
+
+theorem big_literal : (2 : Nat) ^ 70 = 1180591620717411303424 := rfl
+
+def small_literal : Nat := 42
+
+def with_let (n : Nat) : Nat :=
+  let m := n + 5
+  m + m
+
 end Fx

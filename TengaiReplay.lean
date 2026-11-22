@@ -17,10 +17,26 @@ This tool imports `Lean`; the modules it writes do not. It is never imported by 
 
 namespace TengaiReplay
 
+/-- The terms of a parsed export (`--save-tables`) as RECORDS, not as objects. A term as an object costs about 250 bytes in the table parse (the object, its slot, the entry the compactor of `saveModuleData` keeps for it
+and its place in the output buffer): the 62 million terms of the whole tree peaked at 15.4 GB on a 16 GB runner. A record is 5 to about 20 bytes (`recs`, found by `offs`: 4 bytes a term), and a layer's process builds
+into `Expr`s only the terms its own declarations reach (`matExpr`). Layout of a record, every number 4 bytes little endian (`u32`): 0 bvar (index) · 1 sort (level) · 2 const (name, k, k levels) ·
+3 app (fn, arg) · 4 lam and 5 forallE (binder byte, name, type, body) · 6 letE (nondep byte, name, type, value, body) · 7 proj (type name, index, struct) · 8 and 9 the natural and the string literal (a place in `nats`
+and in `strs`: a number or a string does not fit a record) · 10 the term of an expression metadata node (its subterm: the export's `mdata` is dropped). A subterm has a smaller id than its term. -/
+structure CompactExprs where
+  recs : ByteArray := .empty
+  offs : ByteArray := .empty
+  nats : Array Nat := #[]
+  strs : Array String := #[]
+
+def CompactExprs.size (c : CompactExprs) : Nat := c.offs.size / 4
+
 structure Tables where
   names : Array Name := #[Name.anonymous]
   levels : Array Level := #[Level.zero]
   exprs : Array Expr := #[]
+  /-- the terms as records, when the tables were parsed with `loadExport` (then `exprs` is empty): `memo` holds the terms built so far, by id, so that a term is one object however often it is reached (as `exprs` is) -/
+  compact : Option CompactExprs := none
+  memo : Option (IO.Ref (Std.HashMap Nat Expr)) := none
   /-- binder names and annotations to restore on the leading telescope of a constant's type (from `--ext`) -/
   fixes : Std.HashMap Name (Array (Name × BinderInfo)) := {}
   /-- `--stub-refused`: a definition, opaque constant or theorem the kernel refuses is added as an axiom of its type, and counted (`Stats.refused`), instead of stopping the replay -/
@@ -80,10 +96,119 @@ def getLevel (t : Tables) (i : Nat) : IO Level :=
   | some l => pure l
   | none => fail s!"level {i} is not defined yet"
 
-def getExpr (t : Tables) (i : Nat) : IO Expr :=
-  match t.exprs[i]? with
-  | some e => pure e
-  | none => fail s!"term {i} is not defined yet"
+/-- `n` as 4 bytes, little endian, after `b` (the caller has checked that it fits) -/
+def pushU32 (b : ByteArray) (n : Nat) : ByteArray :=
+  let x := n.toUInt32
+  (((b.push x.toUInt8).push (x >>> 8).toUInt8).push (x >>> 16).toUInt8).push (x >>> 24).toUInt8
+
+def getU32 (b : ByteArray) (p : Nat) : Nat :=
+  (b.get! p).toNat ||| ((b.get! (p + 1)).toNat <<< 8) ||| ((b.get! (p + 2)).toNat <<< 16) ||| ((b.get! (p + 3)).toNat <<< 24)
+
+def binderByte : BinderInfo → UInt8
+  | .default => 0
+  | .implicit => 1
+  | .strictImplicit => 2
+  | .instImplicit => 3
+
+def binderOfByte : UInt8 → BinderInfo
+  | 1 => .implicit
+  | 2 => .strictImplicit
+  | 3 => .instImplicit
+  | _ => .default
+
+/-- where the record of term `i` starts -/
+def CompactExprs.start (c : CompactExprs) (i : Nat) : Nat := getU32 c.offs (4 * i)
+
+/-- the subterms of term `i`: the ones that must be built before it -/
+def CompactExprs.kids (c : CompactExprs) (i : Nat) : Array Nat :=
+  let r := c.recs
+  let p := c.start i
+  match (r.get! p).toNat with
+  | 3 => #[getU32 r (p + 1), getU32 r (p + 5)]
+  | 4 | 5 => #[getU32 r (p + 6), getU32 r (p + 10)]
+  | 6 => #[getU32 r (p + 6), getU32 r (p + 10), getU32 r (p + 14)]
+  | 7 => #[getU32 r (p + 9)]
+  | 10 => #[getU32 r (p + 1)]
+  | _ => #[]
+
+/-- term `i` from its record, its subterms taken from `memo` (they must be in it) -/
+def CompactExprs.build (c : CompactExprs) (t : Tables) (memo : Std.HashMap Nat Expr) (i : Nat) : Except String Expr := do
+  let r := c.recs
+  let p := c.start i
+  let u (o : Nat) : Nat := getU32 r (p + o)
+  let nm (o : Nat) : Except String Name :=
+    match t.names[u o]? with
+    | some n => pure n
+    | none => throw s!"name {u o} is not defined yet"
+  let lv (l : Nat) : Except String Level :=
+    match t.levels[l]? with
+    | some v => pure v
+    | none => throw s!"level {l} is not defined yet"
+  let sub (o : Nat) : Except String Expr :=
+    match memo[u o]? with
+    | some e => pure e
+    | none => throw s!"term {u o} was not built before term {i}"
+  match (r.get! p).toNat with
+  | 0 => pure (Expr.bvar (u 1))
+  | 1 => pure (Expr.sort (← lv (u 1)))
+  | 2 =>
+    let mut ls : List Level := []
+    for j in [0:u 5] do
+      ls := (← lv (getU32 r (p + 9 + 4 * j))) :: ls
+    pure (Expr.const (← nm 1) ls.reverse)
+  | 3 => pure (Expr.app (← sub 1) (← sub 5))
+  | 4 => pure (Expr.lam (← nm 2) (← sub 6) (← sub 10) (binderOfByte (r.get! (p + 1))))
+  | 5 => pure (Expr.forallE (← nm 2) (← sub 6) (← sub 10) (binderOfByte (r.get! (p + 1))))
+  | 6 => pure (Expr.letE (← nm 2) (← sub 6) (← sub 10) (← sub 14) (r.get! (p + 1) != 0))
+  | 7 => pure (Expr.proj (← nm 1) (u 5) (← sub 9))
+  | 8 =>
+    match c.nats[u 1]? with
+    | some n => pure (Expr.lit (Literal.natVal n))
+    | none => throw s!"term {i}: natural literal {u 1} is not in the tables"
+  | 9 =>
+    match c.strs[u 1]? with
+    | some s => pure (Expr.lit (Literal.strVal s))
+    | none => throw s!"term {i}: string literal {u 1} is not in the tables"
+  | 10 => sub 1
+  | tag => throw s!"term {i}: unknown record {tag}"
+
+/-- Term `root` of compact tables, and `memo` with every term built on the way. Iterative, with an explicit stack: a subterm has a smaller id than its term, so a term is built when its subterms are, and a deep
+term is not a deep recursion. The term is the one `readExpr` builds from the same export, with the same sharing (one object per id): a module written from either is the same file. -/
+def matExpr (c : CompactExprs) (t : Tables) (memo : Std.HashMap Nat Expr) (root : Nat) : Except String (Expr × Std.HashMap Nat Expr) := Id.run do
+  if let some e := memo[root]? then return .ok (e, memo)
+  if root >= c.size then return .error s!"term {root} is not defined yet"
+  let mut memo := memo
+  -- an entry of the stack is a term id times 2, plus 1 once its subterms have been put above it: it is built when it comes up again
+  let mut stack : Array Nat := #[root * 2]
+  while !stack.isEmpty do
+    let entry := stack.back!
+    stack := stack.pop
+    let i := entry / 2
+    if memo.contains i then continue
+    if entry % 2 == 0 then
+      stack := stack.push (i * 2 + 1)
+      for k in c.kids i do
+        if !memo.contains k then stack := stack.push (k * 2)
+    else
+      match c.build t memo i with
+      | .ok e => memo := memo.insert i e
+      | .error msg => return .error msg
+  match memo[root]? with
+  | some e => return .ok (e, memo)
+  | none => return .error s!"term {root} was not built"
+
+def getExpr (t : Tables) (i : Nat) : IO Expr := do
+  match t.compact, t.memo with
+  | some c, some ref =>
+    -- the map leaves the reference while it is extended: a map that something else holds is copied at its first insertion
+    let memo ← ref.swap {}
+    match matExpr c t memo i with
+    | .ok (e, memo) => ref.set memo; pure e
+    | .error msg => fail msg
+  | _, _ =>
+    match t.exprs[i]? with
+    | some e => pure e
+    | none => fail s!"term {i} is not defined yet"
 
 def binderInfo (s : String) : IO BinderInfo :=
   match s with
@@ -180,6 +305,61 @@ def readExpr (t : Tables) (o : Json) : IO Tables := do
     else
       fail s!"term {idx}: unknown kind"
   pure { t with exprs := t.exprs.push e }
+
+/-- `readExpr` for compact tables: the line becomes a record and nothing is built. What `readExpr` asks of a line it asks here (the subterms, the names and the levels it names are defined already), and a number that does
+not fit 4 bytes is refused. `c` is taken apart and put together again so that its arrays are updated in place. -/
+def readExprCompact (t : Tables) (c : CompactExprs) (o : Json) : IO CompactExprs := do
+  let idx ← nat o "ie"
+  if idx != c.size then fail s!"term {idx} out of order"
+  let big : Nat := 4294967296
+  let num (n : Nat) (what : String) : IO Nat := if n < big then pure n else fail s!"term {idx}: {what} {n} does not fit 4 bytes"
+  let sub (v : Json) (k : String) : IO Nat := do
+    let i ← nat v k
+    if i < idx then pure i else fail s!"term {i} is not defined yet"
+  let nm (v : Json) (k : String) : IO Nat := do
+    let i ← nat v k
+    if i < t.names.size then pure i else fail s!"name {i} is not defined yet"
+  let lv (i : Nat) : IO Nat := if i < t.levels.size then pure i else fail s!"level {i} is not defined yet"
+  match c with
+  | ⟨recs, offs, nats, strs⟩ =>
+    if recs.size + 64 >= big then fail "the records of the terms of this export are over 4 GiB"
+    let offs := pushU32 offs recs.size
+    if has o "bvar" then
+      pure ⟨pushU32 (recs.push 0) (← num (← nat o "bvar") "bound variable"), offs, nats, strs⟩
+    else if has o "sort" then
+      pure ⟨pushU32 (recs.push 1) (← lv (← nat o "sort")), offs, nats, strs⟩
+    else if has o "const" then
+      let v ← obj o "const"
+      let us ← natArr v "us"
+      let mut r := pushU32 (pushU32 (recs.push 2) (← nm v "name")) us.size
+      for u in us do r := pushU32 r (← lv u)
+      pure ⟨r, offs, nats, strs⟩
+    else if has o "app" then
+      let v ← obj o "app"
+      pure ⟨pushU32 (pushU32 (recs.push 3) (← sub v "fn")) (← sub v "arg"), offs, nats, strs⟩
+    else if has o "lam" || has o "forallE" then
+      let lam := has o "lam"
+      let v ← obj o (if lam then "lam" else "forallE")
+      let bi ← binderInfo (← str v "binderInfo")
+      let r := (recs.push (if lam then 4 else 5)).push (binderByte bi)
+      pure ⟨pushU32 (pushU32 (pushU32 r (← nm v "name")) (← sub v "type")) (← sub v "body"), offs, nats, strs⟩
+    else if has o "letE" then
+      let v ← obj o "letE"
+      let nd ← bool v "nondep"
+      let r := (recs.push 6).push (if nd then 1 else 0)
+      pure ⟨pushU32 (pushU32 (pushU32 (pushU32 r (← nm v "name")) (← sub v "type")) (← sub v "value")) (← sub v "body"), offs, nats, strs⟩
+    else if has o "proj" then
+      let v ← obj o "proj"
+      pure ⟨pushU32 (pushU32 (pushU32 (recs.push 7) (← nm v "typeName")) (← num (← nat v "idx") "projection index")) (← sub v "struct"), offs, nats, strs⟩
+    else if has o "natVal" then
+      pure ⟨pushU32 (recs.push 8) nats.size, offs, nats.push (← str o "natVal").toNat!, strs⟩
+    else if has o "strVal" then
+      pure ⟨pushU32 (recs.push 9) strs.size, offs, nats, strs.push (← str o "strVal")⟩
+    else if has o "mdata" then
+      let v ← obj o "mdata"
+      pure ⟨pushU32 (recs.push 10) (← sub v "expr"), offs, nats, strs⟩
+    else
+      fail s!"term {idx}: unknown kind"
 
 def levelParams (t : Tables) (v : Json) : IO (List Name) := do
   let a ← natArr v "levelParams"
@@ -397,13 +577,20 @@ partial def loop (h : IO.FS.Handle) (t : Tables) (env : Environment) (st : Stats
       let (env, st) ← readDecl t env o st
       loop h t env st only
 
-/-- The pass of `loop` without the replay: the declaration lines are kept (each with the first name it declares) and everything else is read as `loop` reads it. A promotion in layers reads the export
-once with this and replays each layer from what it kept (`replayDecls`), where one `tengai-replay` per layer reads and parses the whole export again for every layer. -/
-partial def loadExport (h : IO.FS.Handle) (t : Tables) (decls : Array (Option Name × Json)) : IO (Tables × Array (Option Name × Json)) := do
+/-- a declaration line kept as text (`loadExport`), parsed when a layer replays it -/
+def parseLine (line : String) : IO Json :=
+  match Json.parse line with
+  | .ok j => pure j
+  | .error e => fail s!"not JSON: {e}"
+
+/-- The pass of `loop` without the replay: the declaration lines are kept as TEXT (each with the first name it declares: a parsed line is some forty objects, the line is one) and everything else is read as `loop`
+reads it, except the terms: those are kept as records (`readExprCompact`), in `c`, and `t.exprs` stays empty. A promotion in layers reads the export once with this and replays each layer from what it kept (`replayDecls`), where one `tengai-replay` per layer
+reads and parses the whole export again for every layer. -/
+partial def loadExport (h : IO.FS.Handle) (t : Tables) (c : CompactExprs) (decls : Array (Option Name × String)) : IO (Tables × CompactExprs × Array (Option Name × String)) := do
   let line ← h.getLine
-  if line.isEmpty then return (t, decls)
+  if line.isEmpty then return (t, c, decls)
   let line := line.trimAsciiEnd.copy
-  if line.isEmpty then return (← loadExport h t decls)
+  if line.isEmpty then return (← loadExport h t c decls)
   let o ← match Json.parse line with
     | .ok j => pure j
     | .error e => fail s!"not JSON: {e}"
@@ -412,26 +599,26 @@ partial def loadExport (h : IO.FS.Handle) (t : Tables) (decls : Array (Option Na
     match v.getStr? with
     | .ok s => if !s.startsWith "3." then fail s!"export format {s}, this reads 3.x"
     | .error _ => fail "meta without a format version"
-    loadExport h t decls
+    loadExport h t c decls
   else if has o "in" then
-    loadExport h (← readName t o) decls
+    loadExport h (← readName t o) c decls
   else if has o "il" then
-    loadExport h (← readLevel t o) decls
+    loadExport h (← readLevel t o) c decls
   else if has o "ie" then
-    loadExport h (← readExpr t o) decls
+    loadExport h t (← readExprCompact t c o) decls
   else
-    loadExport h t (decls.push (← firstName t o, o))
+    loadExport h t c (decls.push (← firstName t o, line))
 
 /-- The declarations `loop` would replay, from what `loadExport` kept: the ones `only` names (all of them without `only`) go through the kernel, the others are counted as filtered. -/
-def replayDecls (t : Tables) (env : Environment) (decls : Array (Option Name × Json)) (only : Option (Std.HashSet Name)) : IO (Environment × Stats) := do
+def replayDecls (t : Tables) (env : Environment) (decls : Array (Option Name × String)) (only : Option (Std.HashSet Name)) : IO (Environment × Stats) := do
   let mut env := env
   let mut st : Stats := {}
-  for (first, o) in decls do
+  for (first, line) in decls do
     let keep := match only with
       | none => true
       | some names => first.all names.contains
     if keep then
-      let (e, s) ← readDecl t env o st
+      let (e, s) ← readDecl t env (← parseLine line) st
       env := e
       st := s
     else
@@ -439,31 +626,36 @@ def replayDecls (t : Tables) (env : Environment) (decls : Array (Option Name × 
   pure (env, st)
 
 /-- The parsed export as a file: what `loadExport` returns, written with `saveModuleData` (the image of an `.olean`) and read back mapped by `loadTables`, so that a layer's process does not parse a line of JSON.
-Nothing in the file is a module; it borrows the format, which keeps the sharing of the expression DAG that a copy line by line would lose. The names go where a module keeps extra constant names, the rest are
-entries under names of their own. -/
-unsafe def saveTables (path : System.FilePath) (t : Tables) (decls : Array (Option Name × Json)) : IO Unit := do
+Nothing in the file is a module; it borrows the format. The names go where a module keeps extra constant names, the rest are entries under names of their own: the levels, the declarations, and the terms
+as records (`CompactExprs`: two byte arrays and the literals), which the layer's process builds only as far as its declarations reach. The declarations are their text lines: a layer parses the ones it replays. -/
+unsafe def saveTables (path : System.FilePath) (t : Tables) (c : CompactExprs) (decls : Array (Option Name × String)) : IO Unit := do
   let data : ModuleData := {
     isModule := false, imports := #[], constNames := #[], constants := #[], extraConstNames := t.names,
-    entries := #[(`levels, unsafeCast t.levels), (`exprs, unsafeCast t.exprs), (`decls, unsafeCast decls)] }
+    entries := #[(`levels, unsafeCast t.levels), (`recs, unsafeCast c.recs), (`offs, unsafeCast c.offs), (`nats, unsafeCast c.nats), (`strs, unsafeCast c.strs),
+      (`decls, unsafeCast decls)] }
   saveModuleData path `TengaiTables data
 
 /-- Read a table file back (`saveTables`): the arrays point into the mapped file, which is kept for the life of the process. A file that is not one is refused. -/
-unsafe def loadTables (path : System.FilePath) : IO (Tables × Array (Option Name × Json)) := do
+unsafe def loadTables (path : System.FilePath) : IO (Tables × Array (Option Name × String)) := do
   let (data, _region) ← readModuleData path
   let entry (n : Name) : IO (Array EnvExtensionEntry) :=
     match data.entries.find? (·.1 == n) with
     | some (_, es) => pure es
     | none => fail s!"{path} is not a table file of tengai-replay (it has no {n})"
   if data.extraConstNames.isEmpty || data.extraConstNames[0]! != Name.anonymous then fail s!"{path} is not a table file of tengai-replay (its names do not start with the anonymous name)"
-  pure ({ names := data.extraConstNames, levels := unsafeCast (← entry `levels), exprs := unsafeCast (← entry `exprs) }, unsafeCast (← entry `decls))
+  let memo ← IO.mkRef ({} : Std.HashMap Nat Expr)
+  let c : CompactExprs := { recs := unsafeCast (← entry `recs), offs := unsafeCast (← entry `offs), nats := unsafeCast (← entry `nats), strs := unsafeCast (← entry `strs) }
+  if c.offs.size % 4 != 0 then fail s!"{path} is not a table file of tengai-replay (its term offsets are not a whole number of 4 bytes)"
+  pure ({ names := data.extraConstNames, levels := unsafeCast (← entry `levels), compact := some c, memo := some memo }, unsafeCast (← entry `decls))
 
 /-- The names a replay into `env` (Lean core alone) would add, found without replaying: a declaration whose name `env` already holds is left out, as `alreadyThere` leaves it out; an inductive block adds its
 types, constructors and recursors; the quotient declaration adds its four constants. The kernel is not asked: this decides which names `tengai-extinfo` is asked about, and the replay still checks every declaration. -/
-def addedNames (t : Tables) (env : Environment) (decls : Array (Option Name × Json)) : IO (Array Name) := do
+def addedNames (t : Tables) (env : Environment) (decls : Array (Option Name × String)) : IO (Array Name) := do
   let mut out : Array Name := #[]
-  for (first, o) in decls do
+  for (first, line) in decls do
     let some n := first | continue
     if (env.toKernelEnv.find? n).isSome then continue
+    let o ← parseLine line
     if has o "inductive" then
       let v ← obj o "inductive"
       for k in ["types", "ctors", "recs"] do
@@ -736,7 +928,9 @@ unsafe def main (args : List String) : IO UInt32 := do
     if let some file := opts.addedOnly then
       let (t, decls) ← match opts.tables with
         | some f => loadTables f
-        | none => loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} #[]
+        | none => do
+          let (t, _, decls) ← loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} {} #[]
+          pure (t, decls)
       let env ← importModules #[{ module := `Init }] {} (loadExts := true)
       let names ← addedNames t env decls
       IO.FS.writeFile file (String.join (names.toList.map fun n => (nameToJson n).compress ++ "\n"))
@@ -744,9 +938,10 @@ unsafe def main (args : List String) : IO UInt32 := do
       return 0
     if let some file := opts.saveTables then
       -- parse the export once and keep the result: every layer's process then reads this file instead of the export
-      let (t, decls) ← loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} #[]
-      saveTables file t decls
-      IO.println (Json.mkObj [("tables", Json.mkObj [("names", toJson t.names.size), ("levels", toJson t.levels.size), ("exprs", toJson t.exprs.size), ("declarations", toJson decls.size)])]).compress
+      let (t, c, decls) ← loadExport (← IO.FS.Handle.mk opts.export_ IO.FS.Mode.read) {} {} #[]
+      saveTables file t c decls
+      IO.println (Json.mkObj [("tables", Json.mkObj [("names", toJson t.names.size), ("levels", toJson t.levels.size), ("exprs", toJson c.size), ("record_bytes", toJson c.recs.size),
+        ("declarations", toJson decls.size)])]).compress
       return 0
     match opts.tables with
     | some file =>

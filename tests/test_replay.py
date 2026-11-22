@@ -303,6 +303,9 @@ class Replay(unittest.TestCase):
         tables = self.dir / "tables.olean"
         saved = self.replay_tables_save(tables)
         self.assertEqual(saved["declarations"] > 1000 and saved["exprs"] > 100_000, True, saved)
+        # the terms are kept as records of 5 to about 20 bytes each, not as objects (about 250 bytes each in the parse of the whole tree): the file is far smaller than the export it came from
+        self.assertTrue(5 * saved["exprs"] <= saved["record_bytes"] <= 21 * saved["exprs"], saved)
+        self.assertLess(tables.stat().st_size, self.export.stat().st_size / 2, (tables.stat().st_size, self.export.stat().st_size))
         ext = self.write_rows(self.extinfo(self.export, "tb"), "tb-ext.jsonl")  # the binder fixes and the extension entries apply to a replay from the file as to one from the export
         from_export, from_tables = self.dir / "tb-export", self.dir / "tb-tables"
         a = self.replay(self.export, from_export, "--ext", str(ext))
@@ -336,9 +339,7 @@ class Replay(unittest.TestCase):
         self.assertLess(times["tables", "TengaiData.A"], times["export", "TengaiData.A"] / 3, times)
 
     def replay_tables_save(self, path):
-        r = run(["lake", "exe", "tengai-replay", str(self.export), "--save-tables", str(path)], ROOT)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return json.loads(r.stdout.strip().splitlines()[-1])["tables"]
+        return self.replay_tables_save_of(self.export, path)
 
     def test_a_table_file_that_is_not_one_and_options_that_do_not_go_together_are_refused(self):
         junk = self.dir / "junk.olean"
@@ -443,6 +444,44 @@ class Replay(unittest.TestCase):
         ok = self.replay(self.export, self.dir / "stubok", "--stub-refused")
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
         self.assertEqual(json.loads(ok.stdout.strip().splitlines()[-1])["replay"]["refused"], [])
+
+    def test_from_the_parsed_tables_a_wrong_proof_is_refused_by_the_kernel_and_stubbed_on_request(self):
+        # parsing builds no term (the tables hold records), so it checks nothing: the kernel is asked when a layer replays, as for a replay from the export
+        corrupted = self.corrupted_export("bad-tables.ndjson")
+        tables = self.dir / "bad-tables.olean"
+        self.replay_tables_save_of(corrupted, tables)
+        replay = ["lake", "exe", "tengai-replay", "--tables", str(tables), "--module", "TengaiData.Fx", "--out", str(self.dir / "bad-tables-out")]
+        r = run(replay, ROOT)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("kernel", r.stderr + r.stdout)
+        self.assertFalse((self.dir / "bad-tables-out" / "TengaiData" / "Fx.olean").exists())
+        r = run([*replay, "--stub-refused"], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["replay"]["refused"], ["Fx.add_swap"])
+
+    def test_a_term_built_from_one_that_is_not_defined_yet_is_refused_by_the_parse_and_by_the_replay_alike(self):
+        bad, done = [], False
+        for ln in self.export.read_text(encoding="utf-8").splitlines():
+            o = json.loads(ln)
+            if not done and "ie" in o and "app" in o:
+                o["app"]["arg"] = o["ie"]  # the term itself: a term is built from smaller ids
+                done = True
+            bad.append(json.dumps(o, separators=(",", ":")))
+        self.assertTrue(done)
+        forward = self.dir / "forward.ndjson"
+        forward.write_text("\n".join(bad) + "\n", encoding="utf-8")
+        for how, cmd in (
+            ("tables", ["lake", "exe", "tengai-replay", str(forward), "--save-tables", str(self.dir / "forward.olean")]),
+            ("export", ["lake", "exe", "tengai-replay", str(forward), "--module", "TengaiData.Fx", "--out", str(self.dir / "forward-out")]),
+        ):
+            r = run(cmd, ROOT)
+            self.assertNotEqual(r.returncode, 0, how)
+            self.assertIn("is not defined yet", r.stderr + r.stdout, how)
+
+    def replay_tables_save_of(self, export, path):
+        r = run(["lake", "exe", "tengai-replay", str(export), "--save-tables", str(path)], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout.strip().splitlines()[-1])["tables"]
 
 
 if __name__ == "__main__":

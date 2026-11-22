@@ -940,11 +940,25 @@ def readFixes (rows : Array Json) : IO (Std.HashMap Name (Array (Name × BinderI
       fixes := fixes.insert n fx
   pure fixes
 
+/-- The recursors the kernel generated carry the binder names it chose, and it chooses the index binders of a family by unfolding the declared type of the family: `inductive Foo : ObjectProperty C` has the binder of the
+arrow of `C → Prop` in the definition `ObjectProperty`, as the export has it, and lean4export shares terms that differ only in binder names and keeps the first it saw. The recursor is not a declaration the replay reads
+(the kernel makes it), so the names of the rows (`bi`, the leading binders of the recursor, which `tengai-extinfo` reads in the source) cannot be put back before the kernel sees it. They are put back in the
+constants that are written: binder names and annotations belong to no judgement of the kernel and to no hash (a type is hashed up to them), so the recursor is the same constant with the source's names. -/
+def fixRecursors (fixes : Std.HashMap Name (Array (Name × BinderInfo))) (cs : Array ConstantInfo) : Array ConstantInfo :=
+  if fixes.isEmpty then cs else
+  cs.map fun
+    | .recInfo v =>
+      match fixes[v.name]? with
+      | some fx => .recInfo { v with type := fixTelescope v.type fx }
+      | none => .recInfo v
+    | c => c
+
 /-- what a replay does once its declarations are in: the extension entries (the rows of `--ext`; for a layer, the rows of the constants it added: those of another layer are in that layer's module),
 then the module is written and the statistics are printed as one JSON line. Shared by the one-module replay and each layer of `--layers`. -/
 def finishModule (replayed : Environment) (st : Stats) (rows : Option (Array Json)) (ownOnly : Bool) (scopedInst : Bool) (module out : String) : IO Unit := do
   let mut counts : Option ExtCounts := none
   let mut cur := replayed
+  let mut fixes : Std.HashMap Name (Array (Name × BinderInfo)) := {}
   if let some all := rows then
     let rows ← all.filterMapM fun j => do
       if ownOnly then
@@ -953,6 +967,7 @@ def finishModule (replayed : Environment) (st : Stats) (rows : Option (Array Jso
         | .error _ => return some j
       else
         return some j
+    fixes ← readFixes rows
     let ((c, errs), cst) ← ((applyExt rows scopedInst).run' {}).toIO { fileName := "<replay>", fileMap := default } { env := cur }
     for e in errs do IO.eprintln s!"ext: {e}"
     counts := some c
@@ -962,7 +977,11 @@ def finishModule (replayed : Environment) (st : Stats) (rows : Option (Array Jso
   let rel := String.intercalate "/" (modName.components.map toString) ++ ".olean"
   let path : System.FilePath := (System.FilePath.mk out) / rel
   if let some p := path.parent then IO.FS.createDirAll p
-  writeModule env path
+  if fixes.isEmpty || env.header.isModule then
+    writeModule env path
+  else  -- what `writeModule` does for a module that is not of the module system, with the binders of the recursors put back
+    let data ← mkModuleData env
+    saveModuleData path env.mainModule { data with constants := fixRecursors fixes data.constants }
   IO.println (Json.mkObj [("replay", toJson st), ("ext", match counts with | some c => toJson c | none => Json.null)]).compress
 
 /-- the replay of one module (with `--import` and `--only` it is one layer of a promotion): `run` replays the declarations into the environment it is given, from the export as it is read or from a table file -/

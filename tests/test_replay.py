@@ -143,6 +143,83 @@ class Replay(unittest.TestCase):
         (row,) = [json.loads(ln) for ln in x.stdout.splitlines()]
         self.assertEqual(row["bi"], [[["a"], "implicit"], [["b"], "default"]])
 
+    @staticmethod
+    def share_the_arrow_name(text, hygienic="a._@._internal._hyg.0", plain="a"):
+        """what lean4export does when it meets, before it meets the arrow `(a : #0) → Prop` of `Pred`, another arrow equal to it up to binder names: it shares the term and keeps the name of the first. The export of the
+        fixture has one name for that node (the source's, hygienic); this writes the other one (a plain name) into every such node, as the sharing would."""
+        lines = text.splitlines()
+        names, bvar0, sort0, top = {}, set(), set(), 0
+        for ln in lines:
+            if ln.startswith('{"in"'):
+                o = json.loads(ln)
+                v = o.get("str") or o["num"]
+                part = v["str"] if "str" in v else str(v["i"])
+                names[o["in"]] = f"{names[v['pre']]}.{part}" if v["pre"] in names else part
+                top = max(top, o["in"])
+            elif ln.startswith('{"ie"') or ln.startswith('{"bvar"') or ln.startswith('{"sort"'):
+                o = json.loads(ln)
+                if o.get("bvar") == 0:
+                    bvar0.add(o["ie"])
+                if o.get("sort") == 0:
+                    sort0.add(o["ie"])
+        by_name = {n: i for i, n in names.items()}
+        plain_id, hyg_id = by_name.get(plain), by_name[hygienic]
+        edited = 0
+        # the node is `{"forallE": {..., "name": hygienic id, "type": bvar 0, "body": Prop}, "ie": n}`
+        rewritten = []
+        for ln in lines:
+            if ln.startswith('{"forallE"'):
+                o = json.loads(ln)
+                f = o["forallE"]
+                if f["name"] == hyg_id and f["type"] in bvar0 and f["body"] in sort0:
+                    if plain_id is None:
+                        plain_id = top + 1
+                        rewritten.append(json.dumps({"in": plain_id, "str": {"pre": 0, "str": plain}}, separators=(",", ":")))
+                    f["name"] = plain_id
+                    ln = json.dumps(o, separators=(",", ":"))
+                    edited += 1
+            rewritten.append(ln)
+        return "\n".join(rewritten) + "\n", edited
+
+    def test_the_binder_names_of_a_recursor_are_the_sources_when_the_kernel_took_them_from_a_definition_it_unfolds(self):
+        # the whole-tree comparison of Tengai v0.0.22 had 11 binder differences left, all recursors: the source's index binder is `a✝`, the replay's is `a`. The kernel names the index binder of a recursor after the binder of the
+        # arrow it finds by unfolding the declared type of the family (`: ObjectProperty C` is `C → Prop`), and lean4export shares terms that are equal up to binder names, keeping the first it saw: the replayed `Pred`
+        # below has an arrow with another binder, so the recursor the kernel generates has it too. A `bi` row puts back the binders of a declared type before the kernel sees it, never the ones inside a value.
+        e = run(["lake", "env", EXPORTER, "FxIdx"], FIXTURE)
+        self.assertEqual(e.returncode, 0, e.stderr)
+        shared, edited = self.share_the_arrow_name(e.stdout)
+        self.assertGreaterEqual(edited, 1, "the arrow of `Pred` is in the export, with the source's binder")
+        export = self.dir / "idx.ndjson"
+        export.write_text(shared, encoding="utf-8")
+        added = self.dir / "idx-added.jsonl"
+        both = ["lake", "exe", "tengai-replay", str(export), "--module", "TengaiData.FxIdx"]
+        self.assertEqual(run([*both, "--out", str(self.dir / "idx-pass1"), "--added", str(added)], ROOT).returncode, 0)
+        extinfo = str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo")
+        x = run(["lake", "env", extinfo, str(added), "FxIdx"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        rows = [json.loads(ln) for ln in x.stdout.splitlines()]
+        source = {tuple(r["n"]): r["bi"] for r in rows if "bi" in r}
+        self.assertEqual(source[("FxIdx", "Cl", "rec")][4], [["a", "_@", "_internal", "_hyg", 0], "implicit"], "the source's index binder of the recursor is hygienic")
+
+        def read(out):
+            env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+            y = run(["lake", "env", extinfo, str(added), "TengaiData.FxIdx"], ROOT, env=env)
+            self.assertEqual(y.returncode, 0, y.stderr)
+            return {tuple(json.loads(ln)["n"]): json.loads(ln).get("bi") for ln in y.stdout.splitlines()}
+
+        # the control: a replay without the rows has the name of the shared arrow, `a`: this is the difference of the whole tree
+        plain = self.dir / "idx-plain"
+        self.assertEqual(run([*both, "--out", str(plain)], ROOT).returncode, 0)
+        self.assertEqual(read(plain)[("FxIdx", "Cl", "rec")][4], [["a"], "implicit"])
+        # with the rows the recursor is the source's, whatever the kernel named its binders
+        fixed = self.dir / "idx-fixed"
+        r = run([*both, "--out", str(fixed), "--ext", str(self.write_rows(rows, "idx-ext.jsonl"))], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        back = read(fixed)
+        for n, want in source.items():
+            self.assertEqual(back.get(n), want, n)  # every recursor, and everything else the rows say, equals the source's
+        self.assertEqual(back[("FxIdx", "Cl", "rec")][4], [["a", "_@", "_internal", "_hyg", 0], "implicit"])
+
     def test_scoped_instances_are_carried_with_their_namespace_and_found_only_where_it_is_open(self):
         rows = self.extinfo(self.export, "sc")
         by = {".".join(str(c) for c in r["n"]): r for r in rows}

@@ -88,6 +88,51 @@ class Replay(unittest.TestCase):
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("instSzNat", c.stdout)
 
+    def test_instances_are_added_as_the_source_holds_them_so_that_private_constants_with_one_user_facing_name_do_not_collide(self):
+        # Lean keeps the constants added to an environment in a registry by their name WITHOUT the private prefix; the second private constant with a name that is taken panics there and is not found by Lean's lookups,
+        # though the kernel has it (the first whole-tree comparison lost 5 instances to `Unknown constant`, all private). Two modules of the fixture each have `private instance Fx.instCollide`.
+        e = run(["lake", "env", EXPORTER, "FxA", "FxB"], FIXTURE)
+        self.assertEqual(e.returncode, 0, e.stderr)
+        export = self.dir / "collide.ndjson"
+        export.write_text(e.stdout, encoding="utf-8")
+        added = self.dir / "collide-added.jsonl"
+        both = ["lake", "exe", "tengai-replay", str(export), "--module", "TengaiData.FxAB"]
+        self.assertEqual(run([*both, "--out", str(self.dir / "collide-pass1"), "--added", str(added)], ROOT).returncode, 0)
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "FxA", "FxB"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        rows = [json.loads(ln) for ln in x.stdout.splitlines()]
+        private = [r for r in rows if "inst" in r and r["n"][0] == "_private"]
+        self.assertEqual(sorted(r["n"][1] for r in private), ["FxA", "FxB"])
+        for r in private:
+            self.assertIn("keys", r["inst"], r)  # the entry as the source holds it
+            self.assertTrue(r["inst"]["synth"] == [] or all(isinstance(i, int) for i in r["inst"]["synth"]), r)
+        out = self.dir / "collide-out"
+        r = run([*both, "--out", str(out), "--ext", str(self.write_rows(rows, "collide-ext.jsonl"))], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
+        self.assertEqual(counts["failed"], 0, r.stderr)
+        self.assertEqual(counts["carriedInstances"], counts["instances"] + counts["scopedInstances"])  # every registration came from a row's entry
+        c = self.check(out, "check_collide.lean")
+        self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        # read back from the replayed module by the same tool, the entries (their keys included) are the source's: what was added is what the source holds, not what the replay would compute
+        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+        y = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "TengaiData.FxAB"], ROOT, env=env)
+        self.assertEqual(y.returncode, 0, y.stderr)
+        back = {tuple(json.loads(ln)["n"]): json.loads(ln) for ln in y.stdout.splitlines()}
+        for r in private:
+            self.assertEqual(back[tuple(r["n"])]["inst"], r["inst"])
+        # the control, and the fallback for a file of an older tool (rows without keys): the instance is computed from its type by `addInstance`, which needs Lean's lookups, and one of the two is not found
+        def without_keys(e):
+            return {k: v for k, v in e.items() if k not in ("keys", "synth")}
+
+        old = [{**r, **({"inst": without_keys(r["inst"])} if "inst" in r else {}), **({"sinst": [without_keys(e) for e in r["sinst"]]} if "sinst" in r else {})} for r in rows]
+        r = run([*both, "--out", str(self.dir / "collide-old"), "--ext", str(self.write_rows(old, "collide-ext-old.jsonl"))], ROOT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
+        self.assertGreaterEqual(counts["failed"], 1)  # drop this control with the Lean that has the collision
+        self.assertEqual(counts["carriedInstances"], 0)
+        self.assertIn("Unknown constant", r.stderr)
+
     def test_the_binders_of_a_type_are_read_through_expression_metadata(self):
         # the first whole-tree comparison listed nine `_proof_N` constants as differing: Tengoku's type has a metadata node after its seventh to tenth binder and a replayed type has none, so the telescope of the
         # source stopped there and the snapshot's went on, two binders longer. `tengai-extinfo` now looks through the node, on both sides.
@@ -102,7 +147,9 @@ class Replay(unittest.TestCase):
         rows = self.extinfo(self.export, "sc")
         by = {".".join(str(c) for c in r["n"]): r for r in rows}
         row = by["Fx.Scp.instTgBool"]
-        self.assertEqual(row["sinst"], [{"ns": ["Fx", "Scp"], "prio": 1000}])
+        (reg,) = row["sinst"]
+        self.assertEqual((reg["ns"], reg["prio"]), (["Fx", "Scp"], 1000))
+        self.assertEqual(reg["keys"][0], ["c", ["Fx", "Tg"], 1])  # the entry as the source holds it: the path starts with the class and its arity
         self.assertNotIn("inst", row, "a scoped instance is not a global one")
         self.assertIn("inst", by["Fx.instSzNat"], "the global instance is still carried as before")
         ext = self.write_rows(rows, "sc-ext.jsonl")

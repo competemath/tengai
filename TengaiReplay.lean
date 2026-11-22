@@ -18,7 +18,7 @@ This tool imports `Lean`; the modules it writes do not. It is never imported by 
 namespace TengaiReplay
 
 /-- The terms of a parsed export (`--save-tables`) as RECORDS, not as objects. A term as an object costs about 250 bytes in the table parse (the object, its slot, the entry the compactor of `saveModuleData` keeps for it
-and its place in the output buffer): the 62 million terms of the whole tree peaked at 15.4 GB on a 16 GB runner. A record is 9 to 21 bytes (`recs`, found by `offs`: 4 bytes a term), and a layer's process builds
+and its place in the output buffer): the 62 million terms of the whole tree peaked at 15.4 GB on a 16 GB runner. A record is 5 to about 20 bytes (`recs`, found by `offs`: 4 bytes a term), and a layer's process builds
 into `Expr`s only the terms its own declarations reach (`matExpr`). Layout of a record, every number 4 bytes little endian (`u32`): 0 bvar (index) · 1 sort (level) · 2 const (name, k, k levels) ·
 3 app (fn, arg) · 4 lam and 5 forallE (binder byte, name, type, body) · 6 letE (nondep byte, name, type, value, body) · 7 proj (type name, index, struct) · 8 and 9 the natural and the string literal (a place in `nats`
 and in `strs`: a number or a string does not fit a record) · 10 the term of an expression metadata node (its subterm: the export's `mdata` is dropped). A subterm has a smaller id than its term. -/

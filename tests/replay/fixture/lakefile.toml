@@ -1,5 +1,9 @@
 name = "Fixture"
-defaultTargets = ["Fx"]
+defaultTargets = ["Fx", "FxMd"]
 
 [[lean_lib]]
 name = "Fx"
+
+# a type with expression metadata between two binders (needs `import Lean`, so it is not exported: tests/test_replay.py reads it with tengai-extinfo in this project)
+[[lean_lib]]
+name = "FxMd"

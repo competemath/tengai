@@ -44,11 +44,14 @@ def infoString : BinderInfo → String
   | .strictImplicit => "strictImplicit"
   | .instImplicit => "instImplicit"
 
-/-- the names and annotations of the leading binders of a type (at most 64): lean4export shares terms that are equal up to binder names and annotations, so a replayed constant can carry another term's -/
+/-- the names and annotations of the leading binders of a type (at most 64): lean4export shares terms that are equal up to binder names and annotations, so a replayed constant can carry another term's.
+Expression metadata is looked through: Tengoku's types keep it and a replayed type has none (the export drops it), so a telescope that stopped at a metadata node would be two binders shorter in the source than in the
+snapshot (the nine `_proof_N` constants that the first whole-tree comparison listed as differing: the first N binders equal, two more in the snapshot) and the binders after it would not be restored. -/
 partial def leadingBinders (e : Expr) (acc : Array Json := #[]) : Array Json :=
   if acc.size ≥ 64 then acc else
   match e with
   | .forallE n _ b i => leadingBinders b (acc.push (Json.arr #[nameToJson n, Json.str (infoString i)]))
+  | .mdata _ b => leadingBinders b acc
   | _ => acc
 
 def statusString : ReducibilityStatus → String

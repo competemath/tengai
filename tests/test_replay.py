@@ -88,6 +88,16 @@ class Replay(unittest.TestCase):
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("instSzNat", c.stdout)
 
+    def test_the_binders_of_a_type_are_read_through_expression_metadata(self):
+        # the first whole-tree comparison listed nine `_proof_N` constants as differing: Tengoku's type has a metadata node after its seventh to tenth binder and a replayed type has none, so the telescope of the
+        # source stopped there and the snapshot's went on, two binders longer. `tengai-extinfo` now looks through the node, on both sides.
+        names = self.dir / "md-names.jsonl"
+        names.write_text(json.dumps(["FxMd", "throughMData"]) + "\n", encoding="utf-8")
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(names), "FxMd"], FIXTURE)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        (row,) = [json.loads(ln) for ln in x.stdout.splitlines()]
+        self.assertEqual(row["bi"], [[["a"], "implicit"], [["b"], "default"]])
+
     def test_scoped_instances_are_carried_with_their_namespace_and_found_only_where_it_is_open(self):
         rows = self.extinfo(self.export, "sc")
         by = {".".join(str(c) for c in r["n"]): r for r in rows}

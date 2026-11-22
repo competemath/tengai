@@ -206,6 +206,53 @@ class Replay(unittest.TestCase):
             self.assertEqual(x_["binders"], y_["binders"], x_["n"])  # names, annotations and heads
             self.assertEqual(x_["size"] - x_["mdata"], y_["size"] - y_["mdata"], x_["n"])
 
+    def test_the_hashes_of_the_source_and_of_its_replay_agree_and_tell_declarations_apart(self):
+        """`tengai-typeinfo --hashes` is the cheap faithfulness check of a replay: the same declaration in the source's environment and in the replayed one gives the same record (what it is, the hash and the
+        size of its type, the hash of its value, its universe parameters), whatever the binder names and annotations the exporter shared, and a name that is not a constant is reported, not skipped"""
+        names = self.dir / "hnames.jsonl"
+        wanted = [
+            ["Fx", "swap"],
+            ["Fx", "swap_swap"],
+            ["Fx", "add_swap"],
+            ["Fx", "fib"],
+            ["Fx", "fib_two"],
+            ["Fx", "em_ex"],
+            ["Fx", "Color"],
+            ["Fx", "Color", "rec"],
+            ["Fx", "Pt", "mk"],
+            ["Fx", "Sz", "n"],  # a class projection: the plain replay has other binder annotations, which a hash does not read
+            ["Fx", "Tree"],
+            ["Fx", "no_such_constant"],
+        ]
+        names.write_text("".join(json.dumps(n) + "\n" for n in wanted), encoding="utf-8")
+        typeinfo = str(ROOT / ".lake" / "build" / "bin" / "tengai-typeinfo")
+        src = run(["lake", "env", typeinfo, "--hashes", str(names), "Fx"], FIXTURE)
+        self.assertEqual(src.returncode, 0, src.stderr)
+        out = self.dir / "hout"
+        r = self.replay(self.export, out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+        rep = run(["lake", "env", typeinfo, "--hashes", str(names), "TengaiData.Fx"], ROOT, env=env)
+        self.assertEqual(rep.returncode, 0, rep.stderr)
+        a = [json.loads(ln) for ln in src.stdout.splitlines()]
+        b = [json.loads(ln) for ln in rep.stdout.splitlines()]
+        self.assertEqual(len(a), len(wanted))
+        self.assertEqual(a[-1], {"n": ["Fx", "no_such_constant"], "missing": True})
+        self.assertEqual(a, b)  # the whole record, for every kind of declaration: theorem, definition, inductive type, recursor, constructor, projection
+        by = {".".join(x["n"]): x for x in a if "missing" not in x}
+        self.assertEqual(by["Fx.swap_swap"]["kind"], "thm")
+        self.assertEqual(by["Fx.fib"]["kind"], "def")
+        self.assertEqual(by["Fx.Color"]["kind"], "induct")
+        self.assertNotIn("vhash", by["Fx.Color"])  # an inductive type has no value
+        self.assertIn("vhash", by["Fx.fib_two"])
+        # the control: the hash is not constant, other statements have other hashes
+        self.assertNotEqual(by["Fx.swap_swap"]["thash"], by["Fx.add_swap"]["thash"])
+        self.assertNotEqual(by["Fx.add_swap"]["thash"], by["Fx.em_ex"]["thash"])
+        # and the default mode still prints what it printed
+        d = run(["lake", "env", typeinfo, str(names), "Fx"], FIXTURE)
+        self.assertEqual(d.returncode, 0, d.stderr)
+        self.assertIn("binders", json.loads(d.stdout.splitlines()[0]))
+
     def test_a_promotion_in_layers_loads_a_layer_with_what_it_imports_and_no_more(self):
         # two theorems share a definition: it is the foundation layer, each theorem is a layer of its own that imports it (`--only` names what a layer adds, `--import` what it starts from)
         out = self.dir / "layers"

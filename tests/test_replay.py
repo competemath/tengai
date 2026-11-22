@@ -217,9 +217,8 @@ class Replay(unittest.TestCase):
             ["Fx", "fib"],
             ["Fx", "fib_two"],
             ["Fx", "em_ex"],
-            ["Fx", "Color"],
-            ["Fx", "Color", "rec"],
-            ["Fx", "Pt", "mk"],
+            ["Fx", "Color"],  # an inductive type: its constructors and its recursor follow
+            ["Fx", "Pt"],
             ["Fx", "Sz", "n"],  # a class projection: the plain replay has other binder annotations, which a hash does not read
             ["Fx", "Tree"],
             ["Fx", "no_such_constant"],
@@ -236,13 +235,17 @@ class Replay(unittest.TestCase):
         self.assertEqual(rep.returncode, 0, rep.stderr)
         a = [json.loads(ln) for ln in src.stdout.splitlines()]
         b = [json.loads(ln) for ln in rep.stdout.splitlines()]
-        self.assertEqual(len(a), len(wanted))
+        self.assertGreater(len(a), len(wanted))
         self.assertEqual(a[-1], {"n": ["Fx", "no_such_constant"], "missing": True})
-        self.assertEqual(a, b)  # the whole record, for every kind of declaration: theorem, definition, inductive type, recursor, constructor, projection
+        self.assertEqual(a, b)  # the whole record, for every kind of declaration: theorem, definition, inductive type, constructor, recursor, projection
         by = {".".join(x["n"]): x for x in a if "missing" not in x}
         self.assertEqual(by["Fx.swap_swap"]["kind"], "thm")
         self.assertEqual(by["Fx.fib"]["kind"], "def")
         self.assertEqual(by["Fx.Color"]["kind"], "induct")
+        self.assertEqual([by[f"Fx.Color.{c}"]["kind"] for c in ("red", "green", "blue", "rec")], ["ctor", "ctor", "ctor", "rec"])  # the recursor the kernel derived is the source's
+        self.assertEqual(by["Fx.Pt.mk"]["kind"], "ctor")
+        self.assertEqual(by["Fx.Tree.rec"]["kind"], "rec")  # a nested inductive: the kernel builds auxiliary types for it
+        self.assertTrue(any(k.startswith("Fx.Tree.") for k in by if k not in ("Fx.Tree", "Fx.Tree.rec")))
         self.assertNotIn("vhash", by["Fx.Color"])  # an inductive type has no value
         self.assertIn("vhash", by["Fx.fib_two"])
         # the control: the hash is not constant, other statements have other hashes

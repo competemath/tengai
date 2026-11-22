@@ -10,7 +10,8 @@ environments (isnad reads both off the expression), WHICH part of the expression
 
 `lake env tengai-typeinfo --hashes NAMES.jsonl Module...` prints, instead, a compact record a name: `kind` (what the declaration is: axiom, def, thm, opaque, quot, induct, ctor, rec), `thash`, a hash of the
 whole type, `tsize`, the nodes of the type without its `mdata` (as a tree, no sharing), `vhash`, a hash of the value when the declaration has one (an opaque constant's included), and `lparams`, the
-universe parameters. A hash is Lean's `Expr.hash` (32 bits) of the expression without its `mdata` nodes (`lean4export` leaves them out: they mean nothing to the kernel); it does not read binder names and
+universe parameters. For an inductive type the records of every type of its block, of their constructors and of their recursors follow (a replay hands the kernel the block and the kernel derives the
+recursors: they are what is least obviously the same). A hash is Lean's `Expr.hash` (32 bits) of the expression without its `mdata` nodes (`lean4export` leaves them out: they mean nothing to the kernel); it does not read binder names and
 annotations either. Two environments that hold the same declaration give the same record, whatever produced them; a theorem that stands as an axiom of its type (a statements snapshot, docs/statements.md in
 Tenro) differs in `kind` and has no `vhash`, and its `thash` is the theorem's. A record that differs is a difference, found without printing a type; a record that agrees makes a difference very unlikely
 (two other types agree on a 32-bit hash and on the node count by chance with a probability of about 2^-32 and less), it does not prove there is none: the default mode prints the type for the names
@@ -74,6 +75,13 @@ def kindOf : ConstantInfo → String
   | .ctorInfo _ => "ctor"
   | .recInfo _ => "rec"
 
+/-- a name as the array of its components, as `nameOfJson` reads it -/
+def nameToJson (n : Name) : Json :=
+  Json.arr (n.components.toArray.map fun
+    | .str _ s => Json.str s
+    | .num _ k => toJson k
+    | .anonymous => Json.null)
+
 /-- the record of `--hashes` -/
 def hashRecord (j : Json) (ci : ConstantInfo) : Json :=
   let base : List (String × Json) :=
@@ -103,6 +111,17 @@ unsafe def run (hashes : Bool) (file : String) (mods : List String) : IO UInt32 
     | some ci =>
       if hashes then
         IO.println (hashRecord j ci).compress
+        -- an inductive type: the types of its block, their constructors and their recursors
+        if let .inductInfo iv := ci then
+          for t in iv.all do
+            let mut more : List Name := []
+            if t != n then more := t :: more
+            if let some (.inductInfo tv) := env.find? t then more := more ++ tv.ctors
+            more := more ++ [mkRecName t]
+            for m in more do
+              match env.find? m with
+              | some mi => IO.println (hashRecord (nameToJson m) mi).compress
+              | none => IO.println (Json.mkObj [("n", nameToJson m), ("missing", Json.bool true)]).compress
       else
         let (size, mdata) := census ci.type
         IO.println (Json.mkObj [("n", j), ("size", toJson size), ("mdata", toJson mdata), ("binders", Json.arr (binders ci.type)), ("type", Json.str ((toString ci.type).take 1500).copy)]).compress

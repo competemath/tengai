@@ -66,4 +66,13 @@ def with_let (n : Nat) : Nat :=
   let m := n + 5
   m + m
 
+-- a scoped instance: carried with the namespace it was declared scoped in, and found only where that namespace is open (`tengai-extinfo` did not see scoped instances at all before: the instance state of an
+-- imported module holds the global entries and those of the namespaces that are open, and none is)
+class Tg (α : Type) where
+  tg : Nat
+
+namespace Scp
+scoped instance instTgBool : Tg Bool := ⟨2⟩
+end Scp
+
 end Fx

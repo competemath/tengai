@@ -13,6 +13,10 @@ and prints one JSON line for every one of them that has something to carry:
   {"n": [...], "st": {"fields": [{"f": [...], "proj": [...], "sub": [...]|null, "bi": "default"}, ...], "parents": [{"s": [...], "sub": true, "proj": [...]}, ...]}}
                                                         a structure (or class): its fields in constructor order and the parents of its `extends` clause, which structure instance notation (`{ x := 1 }`, `{ p with x := 2 }`) and field access through a parent read
   {"n": [...], "inst": {"prio": 1000, "kind": "global"}}   an instance (local ones are not carried)
+  {"n": [...], "sinst": [{"ns": [...], "prio": 1000}, ...]}   the namespaces it is a SCOPED instance in (active only where one of them is open), sorted: a constant can be a global instance and a scoped one
+                                                        in several namespaces. `instanceExtension.getState` shows the global entries and those of the namespaces that are open, and none is open when a module
+                                                        is imported, so the scoped ones are read from the entries the extension keeps per namespace (without this a scoped instance of Tengoku, Mathlib's
+                                                        `Classical.propDecidable` and the pointwise instances among them, was not carried at all: 0 of 42,314 rows of the whole tree said `scoped`)
   {"n": [...], "bi": [[[...], "instImplicit"], ...]}     the names and annotations of the leading binders of its type (what lean4export may have replaced by those of an equal term)
 
 `tengai-replay --ext` puts them back. Names travel as arrays of components, never as strings: a numbered or private name does not survive `String.toName`. It imports Lean; no library imports it.
@@ -60,6 +64,12 @@ unsafe def main (args : List String) : IO UInt32 := do
     enableInitializersExecution
     initSearchPath (← findSysroot)
     let env ← importModules (mods.toArray.map fun m => { module := m.toName }) {} (loadExts := true)
+    -- the scoped instances, by constant: (namespace, priority) of every scoped registration
+    let mut scopedRegs : Std.HashMap Name (Array (Name × Nat)) := {}
+    for (ns, es) in (Meta.instanceExtension.ext.getState env).scopedEntries.map.toList do
+      for e in es do
+        if let some n := e.globalName? then
+          scopedRegs := scopedRegs.insert n ((scopedRegs.getD n #[]).push (ns, e.priority))
     let mut seen := 0
     let mut emitted := 0
     let h ← IO.FS.Handle.mk file IO.FS.Mode.read
@@ -93,6 +103,9 @@ unsafe def main (args : List String) : IO UInt32 := do
         match e.attrKind with
         | .local => pure ()
         | k => fields := fields ++ [("inst", Json.mkObj [("prio", toJson e.priority), ("kind", Json.str (if k matches .scoped then "scoped" else "global"))])]
+      if let some ss := scopedRegs[n]? then
+        let sorted := ss.qsort fun a b => a.1.toString < b.1.toString || (a.1.toString == b.1.toString && a.2 < b.2)
+        fields := fields ++ [("sinst", Json.arr (sorted.map fun (ns, p) => Json.mkObj [("ns", nameToJson ns), ("prio", toJson p)]))]
       if let some ci := env.find? n then
         let bs := leadingBinders ci.type
         if bs.size > 0 then fields := fields ++ [("bi", Json.arr bs)]

@@ -671,7 +671,8 @@ def addedNames (t : Tables) (env : Environment) (decls : Array (Option Name × S
 
 A replayed module holds kernel constants and nothing else. `tengai-extinfo` reads, in the environment the constants came from, what Lean keeps about them outside the kernel (reducibility, class and instance
 registration, projection functions) as one JSON line per constant, and `--ext` puts that back. Instances are global by default (without them `#synth Field ℝ` finds nothing and a lemma cannot be applied to a
-concrete goal); `--scoped-instances` registers them as scoped to the namespace of the module, for a library that wants them inactive until opened. Simp lemmas, notation and every other attribute are not carried. -/
+concrete goal); `--scoped-instances` registers them as scoped to the namespace of the module, for a library that wants them inactive until opened. The instances that are SCOPED in the source (`sinst` rows) are
+registered scoped in the namespaces the source says, whatever that option is: they stay inactive until the namespace is opened, as they are in Tengoku. Simp lemmas, notation and every other attribute are not carried. -/
 
 def nameOfJson (j : Json) : IO Name := do
   let arr ← match j.getArr? with
@@ -707,6 +708,8 @@ structure ExtCounts where
   structures : Nat := 0
   classes : Nat := 0
   instances : Nat := 0
+  /-- scoped registrations of instances (one for each namespace an instance is scoped in) -/
+  scopedInstances : Nat := 0
   /-- entries that could not be applied (the reason of the first ones goes to stderr): an entry that Lean refuses is counted, it does not stop a replay of a hundred thousand constants -/
   failed : Nat := 0
   deriving ToJson
@@ -780,6 +783,19 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
       catch ex =>
         c := { c with failed := c.failed + 1 }
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
+  -- the scoped instances, each in the namespace it is scoped in (`addInstance` registers a scoped entry in the current namespace)
+  for r in rows do
+    if has r "sinst" then
+      let n ← nameOfJson (← obj r "n")
+      for e in ← jsonArr r "sinst" do
+        let ns ← nameOfJson (← obj e "ns")
+        let prio ← nat e "prio"
+        try
+          withTheReader Core.Context (fun ctx => { ctx with currNamespace := ns }) (addInstance n AttributeKind.scoped prio)
+          c := { c with scopedInstances := c.scopedInstances + 1 }
+        catch ex =>
+          c := { c with failed := c.failed + 1 }
+          if errors.size < 25 then errors := errors.push s!"scoped instance {n} in {ns}: {← ex.toMessageData.toString}"
   pure (c, errors)
 
 def usage : String := "usage: tengai-replay EXPORT.ndjson --module TengaiData.Foo --out DIR [--import MODULE]... [--only NAMES.jsonl] [--added ADDED.jsonl] [--ext EXT.jsonl [--scoped-instances]] [--stub-refused]\n       tengai-replay EXPORT.ndjson --save-tables TABLES\n       tengai-replay --tables TABLES --module TengaiData.Foo --out DIR [the options above]\n       tengai-replay (EXPORT.ndjson | --tables TABLES) --added-only ADDED.jsonl"

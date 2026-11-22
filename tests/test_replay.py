@@ -77,7 +77,7 @@ class Replay(unittest.TestCase):
         ext.write_text(x.stdout, encoding="utf-8")
         rows = [json.loads(ln) for ln in x.stdout.splitlines()]
         kinds = {k for r in rows for k in r if k != "n"}
-        self.assertEqual(kinds, {"red", "proj", "class", "inst", "bi", "st"})
+        self.assertEqual(kinds, {"red", "proj", "class", "inst", "sinst", "bi", "st"})
         r = self.replay(self.export, withext, "--ext", str(ext))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
@@ -87,6 +87,40 @@ class Replay(unittest.TestCase):
         c = self.check(withext, "check_ext.lean")
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
         self.assertIn("instSzNat", c.stdout)
+
+    def test_scoped_instances_are_carried_with_their_namespace_and_found_only_where_it_is_open(self):
+        rows = self.extinfo(self.export, "sc")
+        by = {".".join(str(c) for c in r["n"]): r for r in rows}
+        row = by["Fx.Scp.instTgBool"]
+        self.assertEqual(row["sinst"], [{"ns": ["Fx", "Scp"], "prio": 1000}])
+        self.assertNotIn("inst", row, "a scoped instance is not a global one")
+        self.assertIn("inst", by["Fx.instSzNat"], "the global instance is still carried as before")
+        ext = self.write_rows(rows, "sc-ext.jsonl")
+        out = self.dir / "sc-out"
+        r = self.replay(self.export, out, "--ext", str(ext))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
+        self.assertEqual((counts["scopedInstances"], counts["failed"]), (1, 0))
+        # where its namespace is open the instance is found, and where it is not it is not (the library it came from behaves so)
+        opened = self.check(out, "check_scoped_open.lean")
+        self.assertEqual(opened.returncode, 0, opened.stdout + opened.stderr)
+        self.assertIn("instTgBool", opened.stdout)  # `#synth` prints the name relative to the open namespace
+        closed = self.check(out, "check_scoped_closed.lean")
+        self.assertNotEqual(closed.returncode, 0, closed.stdout)
+        self.assertIn("synthesize", closed.stdout + closed.stderr)
+        # the control: a replay without the rows has no instance at all, open or not
+        plain = self.dir / "sc-plain"
+        self.assertEqual(self.replay(self.export, plain).returncode, 0)
+        self.assertNotEqual(self.check(plain, "check_scoped_open.lean").returncode, 0)
+        # read back from the replayed module by the same tool, the rows are the source's
+        added = self.dir / "sc-added.jsonl"
+        self.assertEqual(self.replay(self.export, self.dir / "sc-pass2", "--added", str(added)).returncode, 0)
+        env = {**os.environ, "LEAN_PATH": f"{out}:{run(['lake', 'env', 'printenv', 'LEAN_PATH'], ROOT).stdout.strip()}"}
+        x = run(["lake", "env", str(ROOT / ".lake" / "build" / "bin" / "tengai-extinfo"), str(added), "TengaiData.Fx"], ROOT, env=env)
+        self.assertEqual(x.returncode, 0, x.stderr)
+        back = {".".join(str(c) for c in r["n"]): r for r in (json.loads(ln) for ln in x.stdout.splitlines())}
+        self.assertEqual(back["Fx.Scp.instTgBool"]["sinst"], row["sinst"])
+        self.assertEqual(back["Fx.instSzNat"]["inst"], by["Fx.instSzNat"]["inst"])
 
     def extinfo(self, export, tag):
         """the replay's first pass names what it added, tengai-extinfo reads what Lean keeps about those constants where they were built: the rows of an `--ext` file"""
@@ -106,7 +140,7 @@ class Replay(unittest.TestCase):
         flat constructor, a constant of its own that an export holds only when it is named as a root."""
         rows = self.extinfo(self.export, "s")
         st = {".".join(str(c) for c in r["n"]): r["st"] for r in rows if "st" in r}
-        self.assertEqual(sorted(st), ["Fx.Pt", "Fx.Pt3", "Fx.Sz"])  # the structures and the class of the fixture
+        self.assertEqual(sorted(st), ["Fx.Pt", "Fx.Pt3", "Fx.Sz", "Fx.Tg"])  # the structures and the classes of the fixture
         self.assertEqual([f["f"] for f in st["Fx.Pt3"]["fields"]], [["toPt"], ["z"]])
         self.assertEqual(st["Fx.Pt3"]["fields"][0]["sub"], ["Fx", "Pt"])  # the embedded parent
         self.assertEqual(st["Fx.Pt3"]["parents"], [{"s": ["Fx", "Pt"], "sub": True, "proj": ["Fx", "Pt3", "toPt"]}])
@@ -120,7 +154,7 @@ class Replay(unittest.TestCase):
         r = self.replay(self.export, full, "--ext", str(self.write_rows(rows, "swith.jsonl")))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         counts = json.loads(r.stdout.strip().splitlines()[-1])["ext"]
-        self.assertEqual(counts["structures"], 3)
+        self.assertEqual(counts["structures"], 4)  # Pt, Pt3 and the classes Sz and Tg
         self.assertEqual(counts["failed"], 0, r.stderr)
         c = self.check(full, "check_struct.lean")
         self.assertEqual(c.returncode, 0, c.stdout + c.stderr)

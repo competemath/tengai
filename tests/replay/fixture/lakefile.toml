@@ -1,5 +1,5 @@
 name = "Fixture"
-defaultTargets = ["Fx", "FxMd", "FxA", "FxB"]
+defaultTargets = ["Fx", "FxMd", "FxA", "FxB", "FxIdx"]
 
 [[lean_lib]]
 name = "Fx"
@@ -14,3 +14,8 @@ name = "FxA"
 
 [[lean_lib]]
 name = "FxB"
+
+# an inductive family whose index is found by unfolding a definition: the kernel names the index binder of its recursor after the binder of the unfolded arrow, which the export (it shares terms that differ only in
+# binder names) does not keep
+[[lean_lib]]
+name = "FxIdx"

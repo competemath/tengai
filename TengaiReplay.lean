@@ -701,6 +701,38 @@ def reducibilityOfString (s : String) : IO ReducibilityStatus :=
   | "instanceReducible" => pure ReducibilityStatus.instanceReducible
   | _ => fail s!"reducibility {s}"
 
+/-- a key of the discrimination-tree path of an instance, from the JSON `tengai-extinfo` wrote (the tags are in its header) -/
+def keyOfJson (j : Json) : IO Meta.DiscrTree.Key := do
+  let a ← match j.getArr? with
+    | .ok a => pure a
+    | .error e => fail s!"a key is an array: {e}"
+  let tag ← match a[0]? with
+    | some (Json.str s) => pure s
+    | _ => fail "a key starts with its tag"
+  let natAt (i : Nat) : IO Nat :=
+    match a[i]? with
+    | some v => match v.getNat? with
+      | .ok n => pure n
+      | .error e => fail s!"key {tag}: {e}"
+    | none => fail s!"key {tag}: a number is missing"
+  let nameAt (i : Nat) : IO Name :=
+    match a[i]? with
+    | some v => nameOfJson v
+    | none => fail s!"key {tag}: a name is missing"
+  let strAt (i : Nat) : IO String :=
+    match a[i]? with
+    | some (Json.str s) => pure s
+    | _ => fail s!"key {tag}: a string is missing"
+  match tag with
+  | "c" => pure (.const (← nameAt 1) (← natAt 2))
+  | "n" => pure (.lit (.natVal (← strAt 1).toNat!))
+  | "s" => pure (.lit (.strVal (← strAt 1)))
+  | "*" => pure .star
+  | "o" => pure .other
+  | "a" => pure .arrow
+  | "p" => pure (.proj (← nameAt 1) (← natAt 2) (← natAt 3))
+  | _ => fail s!"a key of kind {tag}"
+
 structure ExtCounts where
   reducibility : Nat := 0
   projections : Nat := 0
@@ -710,9 +742,23 @@ structure ExtCounts where
   instances : Nat := 0
   /-- scoped registrations of instances (one for each namespace an instance is scoped in) -/
   scopedInstances : Nat := 0
+  /-- instance entries added as the source holds them (its keys and synthesis order from the row), the others were computed by `addInstance` from the type -/
+  carriedInstances : Nat := 0
   /-- entries that could not be applied (the reason of the first ones goes to stderr): an entry that Lean refuses is counted, it does not stop a replay of a hundred thousand constants -/
   failed : Nat := 0
   deriving ToJson
+
+open Meta in
+/-- The entry of instance `n` as its row holds it, or `none` for a row without keys (an older file). The value is the constant with its own level parameters, read from the KERNEL: Lean's lookups cannot see a
+private constant whose user-facing name another private constant of the environment has (`Environment.addDeclCore` keeps the new constants in a registry by that name, and the second one is not found), and an entry
+that is added as it is needs no lookup of its own. -/
+def instanceEntryOf (n : Name) (p : Json) (prio : Nat) (kind : AttributeKind) : MetaM (Option InstanceEntry) := do
+  if !has p "keys" then return none
+  let mut keys : Array InstanceKey := #[]
+  for j in ← jsonArr p "keys" do keys := keys.push (← keyOfJson j)
+  let synth ← natArr p "synth"
+  let some ci := (← getEnv).toKernelEnv.find? n | throwError "Unknown constant `{n}`"
+  return some { keys, val := mkConst n (ci.levelParams.map mkLevelParam), priority := prio, globalName? := some n, synthOrder := synth, attrKind := kind }
 
 open Meta in
 /-- put the extension entries back: reducibility first (instance registration reads it), then projection info, classes, then instances. A refused entry is counted and its reason kept (the first 25). -/
@@ -778,8 +824,14 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
       let p ← obj r "inst"
       let prio ← nat p "prio"
       try
-        addInstance n (if scopedInst then AttributeKind.scoped else AttributeKind.global) prio
-        c := { c with instances := c.instances + 1 }
+        let kind := if scopedInst then AttributeKind.scoped else AttributeKind.global
+        match ← instanceEntryOf n p prio kind with
+        | some e =>
+          modifyEnv fun env => instanceExtension.addCore env e kind Name.anonymous
+          c := { c with instances := c.instances + 1, carriedInstances := c.carriedInstances + 1 }
+        | none =>
+          addInstance n kind prio
+          c := { c with instances := c.instances + 1 }
       catch ex =>
         c := { c with failed := c.failed + 1 }
         if errors.size < 25 then errors := errors.push s!"instance {n}: {← ex.toMessageData.toString}"
@@ -791,8 +843,13 @@ def applyExt (rows : Array Json) (scopedInst : Bool) : MetaM (ExtCounts × Array
         let ns ← nameOfJson (← obj e "ns")
         let prio ← nat e "prio"
         try
-          withTheReader Core.Context (fun ctx => { ctx with currNamespace := ns }) (addInstance n AttributeKind.scoped prio)
-          c := { c with scopedInstances := c.scopedInstances + 1 }
+          match ← instanceEntryOf n e prio AttributeKind.scoped with
+          | some en =>
+            modifyEnv fun env => instanceExtension.addCore env en AttributeKind.scoped ns
+            c := { c with scopedInstances := c.scopedInstances + 1, carriedInstances := c.carriedInstances + 1 }
+          | none =>
+            withTheReader Core.Context (fun ctx => { ctx with currNamespace := ns }) (addInstance n AttributeKind.scoped prio)
+            c := { c with scopedInstances := c.scopedInstances + 1 }
         catch ex =>
           c := { c with failed := c.failed + 1 }
           if errors.size < 25 then errors := errors.push s!"scoped instance {n} in {ns}: {← ex.toMessageData.toString}"

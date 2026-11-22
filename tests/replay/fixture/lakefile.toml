@@ -1,5 +1,5 @@
 name = "Fixture"
-defaultTargets = ["Fx", "FxMd"]
+defaultTargets = ["Fx", "FxMd", "FxA", "FxB"]
 
 [[lean_lib]]
 name = "Fx"
@@ -7,3 +7,10 @@ name = "Fx"
 # a type with expression metadata between two binders (needs `import Lean`, so it is not exported: tests/test_replay.py reads it with tengai-extinfo in this project)
 [[lean_lib]]
 name = "FxMd"
+
+# two modules with a private instance of the same user-facing name: exported together they collide in the registry of newly added constants of one replayed module
+[[lean_lib]]
+name = "FxA"
+
+[[lean_lib]]
+name = "FxB"

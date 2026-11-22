@@ -12,8 +12,12 @@ and prints one JSON line for every one of them that has something to carry:
   {"n": [...], "class": true}                           a class
   {"n": [...], "st": {"fields": [{"f": [...], "proj": [...], "sub": [...]|null, "bi": "default"}, ...], "parents": [{"s": [...], "sub": true, "proj": [...]}, ...]}}
                                                         a structure (or class): its fields in constructor order and the parents of its `extends` clause, which structure instance notation (`{ x := 1 }`, `{ p with x := 2 }`) and field access through a parent read
-  {"n": [...], "inst": {"prio": 1000, "kind": "global"}}   an instance (local ones are not carried)
-  {"n": [...], "sinst": [{"ns": [...], "prio": 1000}, ...]}   the namespaces it is a SCOPED instance in (active only where one of them is open), sorted: a constant can be a global instance and a scoped one
+  {"n": [...], "inst": {"prio": 1000, "kind": "global", "keys": [...], "synth": [...]}}   an instance (local ones are not carried), with the entry as the source holds it: the keys of its discrimination-tree path
+                                                        (`["c", name, arity]`, `["n", "123"]`, `["s", "text"]`, `["*"]`, `["o"]`, `["a"]`, `["p", name, i, arity]`) and the order its arguments are synthesised in. `tengai-replay
+                                                        --ext` adds that entry as it is and recomputes nothing: recomputing needs the lookups of the replayed environment, which cannot see a private constant whose user-facing
+                                                        name another module's private constant has (Lean keeps newly added constants in a registry by that name: the second one panics and is not found), and an unfolding that
+                                                        may differ from the source's. A row without `keys` (an older file) is recomputed as before.
+  {"n": [...], "sinst": [{"ns": [...], "prio": 1000, "keys": [...], "synth": [...]}, ...]}   the namespaces it is a SCOPED instance in (active only where one of them is open), sorted: a constant can be a global instance and a scoped one
                                                         in several namespaces. `instanceExtension.getState` shows the global entries and those of the namespaces that are open, and none is open when a module
                                                         is imported, so the scoped ones are read from the entries the extension keeps per namespace (without this a scoped instance of Tengoku, Mathlib's
                                                         `Classical.propDecidable` and the pointwise instances among them, was not carried at all: 0 of 42,314 rows of the whole tree said `scoped`)
@@ -54,6 +58,23 @@ partial def leadingBinders (e : Expr) (acc : Array Json := #[]) : Array Json :=
   | .mdata _ b => leadingBinders b acc
   | _ => acc
 
+/-- a key of the discrimination-tree path of an instance as JSON; `none` for one that cannot be carried (a free variable: only a local instance has one) -/
+def keyToJson : Meta.DiscrTree.Key → Option Json
+  | .const n a => some (Json.arr #[Json.str "c", nameToJson n, toJson a])
+  | .fvar _ _ => none
+  | .lit (.natVal v) => some (Json.arr #[Json.str "n", Json.str (toString v)])
+  | .lit (.strVal s) => some (Json.arr #[Json.str "s", Json.str s])
+  | .star => some (Json.arr #[Json.str "*"])
+  | .other => some (Json.arr #[Json.str "o"])
+  | .arrow => some (Json.arr #[Json.str "a"])
+  | .proj s i a => some (Json.arr #[Json.str "p", nameToJson s, toJson i, toJson a])
+
+/-- the entry of an instance as the source holds it, without what the entry does not need to be added again: its keys and the order its arguments are synthesised in -/
+def entryFields (e : Meta.InstanceEntry) : List (String × Json) :=
+  match e.keys.mapM keyToJson with
+  | some ks => [("keys", Json.arr ks), ("synth", toJson e.synthOrder)]
+  | none => []
+
 def statusString : ReducibilityStatus → String
   | .reducible => "reducible"
   | .semireducible => "semireducible"
@@ -68,11 +89,11 @@ unsafe def main (args : List String) : IO UInt32 := do
     initSearchPath (← findSysroot)
     let env ← importModules (mods.toArray.map fun m => { module := m.toName }) {} (loadExts := true)
     -- the scoped instances, by constant: (namespace, priority) of every scoped registration
-    let mut scopedRegs : Std.HashMap Name (Array (Name × Nat)) := {}
+    let mut scopedRegs : Std.HashMap Name (Array (Name × Meta.InstanceEntry)) := {}
     for (ns, es) in (Meta.instanceExtension.ext.getState env).scopedEntries.map.toList do
       for e in es do
         if let some n := e.globalName? then
-          scopedRegs := scopedRegs.insert n ((scopedRegs.getD n #[]).push (ns, e.priority))
+          scopedRegs := scopedRegs.insert n ((scopedRegs.getD n #[]).push (ns, e))
     let mut seen := 0
     let mut emitted := 0
     let h ← IO.FS.Handle.mk file IO.FS.Mode.read
@@ -105,10 +126,10 @@ unsafe def main (args : List String) : IO UInt32 := do
       if let some e := (Meta.instanceExtension.getState env).instanceNames.find? n then
         match e.attrKind with
         | .local => pure ()
-        | k => fields := fields ++ [("inst", Json.mkObj [("prio", toJson e.priority), ("kind", Json.str (if k matches .scoped then "scoped" else "global"))])]
+        | k => fields := fields ++ [("inst", Json.mkObj ([("prio", toJson e.priority), ("kind", Json.str (if k matches .scoped then "scoped" else "global"))] ++ entryFields e))]
       if let some ss := scopedRegs[n]? then
-        let sorted := ss.qsort fun a b => a.1.toString < b.1.toString || (a.1.toString == b.1.toString && a.2 < b.2)
-        fields := fields ++ [("sinst", Json.arr (sorted.map fun (ns, p) => Json.mkObj [("ns", nameToJson ns), ("prio", toJson p)]))]
+        let sorted := ss.qsort fun a b => a.1.toString < b.1.toString || (a.1.toString == b.1.toString && a.2.priority < b.2.priority)
+        fields := fields ++ [("sinst", Json.arr (sorted.map fun (ns, e) => Json.mkObj ([("ns", nameToJson ns), ("prio", toJson e.priority)] ++ entryFields e)))]
       if let some ci := env.find? n then
         let bs := leadingBinders ci.type
         if bs.size > 0 then fields := fields ++ [("bi", Json.arr bs)]
